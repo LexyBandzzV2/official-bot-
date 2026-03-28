@@ -1,17 +1,20 @@
-"""Williams Alligator — chart OHLC, SMMA on median price, no line offset for signals.
+"""Williams Alligator — chart OHLC, SMMA on median price.
 
-Lines (TradingView colors):
-    Lips  (green)  — fastest SMMA on median price
-    Teeth (red)    — middle
-    Jaw   (blue)   — slowest
+Lines: Lips (green), Teeth (red), Jaw (blue). Median price = (high + low) / 2.
 
-Signal definitions (your spec):
-    BUY  — on this bar, lips crosses **up** through teeth **and** crosses **up** through jaw
-           (green moves upward over red and blue).
-    SHORT — on this bar, lips crosses **down** through teeth **and** **down** through jaw
-           (green moves downward over red and blue).
+Entry (Alligator leg)
+    LONG  — first bar where lips is **above both** teeth and jaw, after it was **not**
+            fully above both on the prior bar. The green line may take one bar or many
+            to cross red and blue; **no signal until lips is above both** — then one
+            signal on that completion bar.
+    SHORT — first bar where lips is **below both** teeth and jaw, after it was **not**
+            fully below both on the prior bar.
 
-Median price = (high + low) / 2.  SMMA lengths default 13 / 8 / 5 (jaw / teeth / lips).
+Exit (after entry, for position management)
+    After LONG:  when lips **touches** teeth from above — lips was above red, now at
+                 or below red (first contact / cross).
+    After SHORT: when lips **touches** teeth from below — lips was below red, now at
+                 or above red (pullback to red).
 
 Input DataFrame must include ``open``, ``high``, ``low``, ``close``.
 """
@@ -56,29 +59,35 @@ def calculate_alligator(
     return out
 
 
-def _valid_three(prev: pd.Series, curr: pd.Series) -> bool:
-    for col in ("jaw", "teeth", "lips"):
-        if np.isnan(prev[col]) or np.isnan(curr[col]):
+def _row_finite(row: pd.Series, cols: tuple[str, ...]) -> bool:
+    for c in cols:
+        if np.isnan(row[c]):
             return False
     return True
 
 
-def alligator_buy_event(prev: pd.Series, curr: pd.Series) -> bool:
-    """Lips (green) crosses upward over teeth (red) and jaw (blue) on this bar."""
-    if not _valid_three(prev, curr):
+def _lips_above_both(row: pd.Series) -> bool:
+    """True when lips > teeth and lips > jaw (green above red and blue)."""
+    if not _row_finite(row, ("jaw", "teeth", "lips")):
         return False
-    cross_up_teeth = (prev["lips"] <= prev["teeth"]) and (curr["lips"] > curr["teeth"])
-    cross_up_jaw = (prev["lips"] <= prev["jaw"]) and (curr["lips"] > curr["jaw"])
-    return bool(cross_up_teeth and cross_up_jaw)
+    return bool(row["lips"] > row["teeth"] and row["lips"] > row["jaw"])
+
+
+def _lips_below_both(row: pd.Series) -> bool:
+    """True when lips < teeth and lips < jaw (green below red and blue)."""
+    if not _row_finite(row, ("jaw", "teeth", "lips")):
+        return False
+    return bool(row["lips"] < row["teeth"] and row["lips"] < row["jaw"])
+
+
+def alligator_buy_event(prev: pd.Series, curr: pd.Series) -> bool:
+    """First bar where lips finishes above both teeth and jaw (long / buy Alligator point)."""
+    return _lips_above_both(curr) and not _lips_above_both(prev)
 
 
 def alligator_sell_event(prev: pd.Series, curr: pd.Series) -> bool:
-    """Lips (green) crosses downward below teeth and jaw on this bar."""
-    if not _valid_three(prev, curr):
-        return False
-    cross_dn_teeth = (prev["lips"] >= prev["teeth"]) and (curr["lips"] < curr["teeth"])
-    cross_dn_jaw = (prev["lips"] >= prev["jaw"]) and (curr["lips"] < curr["jaw"])
-    return bool(cross_dn_teeth and cross_dn_jaw)
+    """First bar where lips finishes below both teeth and jaw (short Alligator point)."""
+    return _lips_below_both(curr) and not _lips_below_both(prev)
 
 
 def check_alligator_buy(df: pd.DataFrame) -> bool:
@@ -96,22 +105,22 @@ def check_alligator_sell(df: pd.DataFrame) -> bool:
 
 
 def check_lips_touch_teeth_down(df: pd.DataFrame) -> bool:
-    """Long exit: lips crosses down through teeth."""
+    """Long exit: green was above red, now touches or crosses through red (down)."""
     if len(df) < 2:
         return False
     prev, curr = df.iloc[-2], df.iloc[-1]
     for col in ("lips", "teeth"):
         if np.isnan(prev[col]) or np.isnan(curr[col]):
             return False
-    return (prev["lips"] >= prev["teeth"]) and (curr["lips"] < curr["teeth"])
+    return bool(prev["lips"] > prev["teeth"] and curr["lips"] <= curr["teeth"])
 
 
 def check_lips_touch_teeth_up(df: pd.DataFrame) -> bool:
-    """Short exit: lips crosses up through teeth."""
+    """Short exit: green was below red, now touches or crosses through red (pullback up)."""
     if len(df) < 2:
         return False
     prev, curr = df.iloc[-2], df.iloc[-1]
     for col in ("lips", "teeth"):
         if np.isnan(prev[col]) or np.isnan(curr[col]):
             return False
-    return (prev["lips"] <= prev["teeth"]) and (curr["lips"] > curr["teeth"])
+    return bool(prev["lips"] < prev["teeth"] and curr["lips"] >= curr["teeth"])

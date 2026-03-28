@@ -34,6 +34,8 @@ OPENROUTER_MODEL:   str = os.getenv("OPENROUTER_MODEL", "moonshotai/kimi-k2")
 FP_MARKETS_LOGIN:    str = os.getenv("FP_MARKETS_LOGIN", "")
 FP_MARKETS_PASSWORD: str = os.getenv("FP_MARKETS_PASSWORD", "")
 FP_MARKETS_SERVER:   str = os.getenv("FP_MARKETS_SERVER", "FPMarkets-Demo")
+KRAKEN_API_KEY:      str = os.getenv("KRAKEN_API_KEY", "")
+KRAKEN_SECRET:       str = os.getenv("KRAKEN_SECRET", "")
 
 # ── Notifications ─────────────────────────────────────────────────────────────
 PUSHOVER_APP_TOKEN: str = os.getenv("PUSHOVER_APP_TOKEN", "")
@@ -47,6 +49,10 @@ MAX_DAILY_DRAWDOWN:      float = float(os.getenv("MAX_DAILY_DRAWDOWN", "0.10")) 
 MAX_TRADES_PER_HOUR:     int   = int(os.getenv("MAX_TRADES_PER_HOUR", "15"))      # hard cap
 ML_CONFIDENCE_THRESHOLD: float = float(os.getenv("ML_CONFIDENCE_THRESHOLD", "0.60"))
 AI_CONFIDENCE_THRESHOLD: float = float(os.getenv("AI_CONFIDENCE_THRESHOLD", "0.60"))
+
+# Trailing take-profit (peak giveback) — exit after retracing this fraction of max favorable move
+TRAILING_TP_ENABLED:   bool  = os.getenv("TRAILING_TP_ENABLED", "true").lower() in ("1", "true", "yes")
+TRAILING_TP_GIVEBACK:  float = float(os.getenv("TRAILING_TP_GIVEBACK", "0.35"))  # 35 %
 
 # ── Timezone ──────────────────────────────────────────────────────────────────
 TIMEZONE: str = os.getenv("TIMEZONE", "America/Toronto")

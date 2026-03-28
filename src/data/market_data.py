@@ -15,6 +15,7 @@ Usage:
 
 from __future__ import annotations
 
+
 import logging
 import time
 from datetime import datetime, timedelta, timezone
@@ -24,6 +25,23 @@ import numpy as np
 import pandas as pd
 import pytz
 import requests
+
+
+# Import Kraken WebSocket client
+try:
+    from src.data.kraken_ws_client import KrakenWebSocketClient
+    _KRAKEN_WS_AVAILABLE = True
+except ImportError:
+    _KRAKEN_WS_AVAILABLE = False
+    KrakenWebSocketClient = None
+
+# Import Coinbase WebSocket client
+try:
+    from src.data.coinbase_ws_client import CoinbaseWebSocketClient
+    _COINBASE_WS_AVAILABLE = True
+except ImportError:
+    _COINBASE_WS_AVAILABLE = False
+    CoinbaseWebSocketClient = None
 
 log = logging.getLogger(__name__)
 
@@ -323,6 +341,7 @@ def get_historical_ohlcv(
     return pd.DataFrame()
 
 
+
 def get_latest_candles(
     symbol:    str,
     timeframe: str,
@@ -331,17 +350,67 @@ def get_latest_candles(
 ) -> pd.DataFrame:
     """Fetch the most recent N candles for a symbol.
 
-    Uses different window sizes depending on timeframe to ensure enough data.
+    Uses Kraken WebSocket for crypto (if available) for 5m, 15m, 30m, 1h, 4h, else falls back to get_historical_ohlcv.
     """
-    # Estimate how far back we need to go for `count` candles
     tf_mins: dict[str, int] = {
         "1m": 1, "3m": 3, "5m": 5, "15m": 15, "30m": 30,
         "1h": 60, "2h": 120, "4h": 240, "1d": 1440, "1w": 10080,
     }
     mins_per_bar  = tf_mins.get(timeframe, 60)
-    look_back_min = mins_per_bar * count * 2  # 2× buffer for weekends / gaps
+    look_back_min = mins_per_bar * count * 2
     start = datetime.now(timezone.utc) - timedelta(minutes=look_back_min)
 
+    # Use Coinbase WebSocket for BTC/USD and ETH/USD ticker (reliable price reference)
+    is_crypto = "/" in symbol and any(c in symbol.upper() for c in ["BTC", "ETH", "XRP", "SOL", "ADA", "BNB", "USDT"])
+    coinbase_products = {"BTC/USD": "BTC-USD", "ETH/USD": "ETH-USD"}
+    if _COINBASE_WS_AVAILABLE and is_crypto and symbol in coinbase_products:
+        try:
+            client = CoinbaseWebSocketClient()
+            import asyncio
+            async def fetch_cb():
+                await client.connect()
+                await client.subscribe_ticker([coinbase_products[symbol]])
+                await asyncio.wait_for(client.listen(), timeout=5)
+            try:
+                asyncio.run(fetch_cb())
+            except Exception:
+                pass
+            df = client.get_ticker_df(coinbase_products[symbol])
+            if not df.empty:
+                # Convert ticker to OHLCV-like DataFrame
+                df = df.rename(columns={"price": "close"})
+                df["open"] = df["close"]
+                df["high"] = df["close"]
+                df["low"] = df["close"]
+                df["volume"] = df["volume_24h"] if "volume_24h" in df else 0.0
+                df = df[["time", "open", "high", "low", "close", "volume"]]
+                return df.tail(count).reset_index(drop=True)
+        except Exception as e:
+            log.warning(f"Coinbase WS failed: {e}")
+
+    # Fallback to Kraken WebSocket for crypto and supported timeframes
+    supported_kraken_tfs = {"5m": 5, "15m": 15, "30m": 30, "1h": 60, "4h": 240}
+    if (
+        _KRAKEN_WS_AVAILABLE and is_crypto and timeframe in supported_kraken_tfs
+    ):
+        try:
+            client = KrakenWebSocketClient()
+            import asyncio
+            async def fetch_ws():
+                await client.connect()
+                await client.subscribe_ohlc(symbol, interval=supported_kraken_tfs[timeframe])
+                await asyncio.wait_for(client.listen(), timeout=5)
+            try:
+                asyncio.run(fetch_ws())
+            except Exception:
+                pass
+            df = client.get_ohlc_df(symbol)
+            if not df.empty:
+                return df.tail(count).reset_index(drop=True)
+        except Exception as e:
+            log.warning(f"Kraken WS failed: {e}")
+
+    # Fallback to historical fetch
     df = get_historical_ohlcv(symbol, timeframe, start=start, source=source)
     if df.empty:
         return df

@@ -174,15 +174,13 @@ class RiskManager:
         trade_id:      str,
         current_price: float,
         ha_df=None,
+        peak_giveback: Optional[object] = None,
     ) -> Tuple[bool, str]:
         """Check whether an open trade should be closed.
 
-        Checks (in order):
-            ALLIGATOR_TP  — lips touched teeth (primary exit)
-            TRAIL_STOP    — price hit the trailing stop
-            HARD_STOP     — price hit the 2 % hard floor
+        Order: HARD_STOP → TRAILING_TP (peak giveback) → TRAIL_STOP → ALLIGATOR_TP.
 
-        Returns (should_close: bool, reason: str).
+        ``peak_giveback`` is optional :class:`PeakGiveback` (must be updated each bar).
         """
         rec = self.open_positions.get(trade_id)
         if rec is None:
@@ -190,7 +188,21 @@ class RiskManager:
 
         trail: TrailingStop = getattr(rec, "_trail_stop", None)
 
-        # 1. Alligator TP (checked via ha_df if provided)
+        # 1. Hard stop (safety net first)
+        if rec.signal_type == "BUY" and current_price <= rec.stop_loss_hard:
+            return True, "HARD_STOP"
+        if rec.signal_type == "SELL" and current_price >= rec.stop_loss_hard:
+            return True, "HARD_STOP"
+
+        # 2. Peak giveback (trailing take-profit style)
+        if peak_giveback is not None and peak_giveback.is_triggered(current_price):
+            return True, "TRAILING_TP"
+
+        # 3. Teeth trailing stop
+        if trail and trail.is_triggered(current_price):
+            return True, "TRAIL_STOP"
+
+        # 4. Alligator lips-touch (fallback / audit exit)
         if ha_df is not None:
             from src.indicators.alligator import (
                 check_lips_touch_teeth_down,
@@ -200,16 +212,6 @@ class RiskManager:
                 return True, "ALLIGATOR_TP"
             if rec.signal_type == "SELL" and check_lips_touch_teeth_up(ha_df):
                 return True, "ALLIGATOR_TP"
-
-        # 2. Trailing stop
-        if trail and trail.is_triggered(current_price):
-            return True, "TRAIL_STOP"
-
-        # 3. Hard stop (safety net)
-        if rec.signal_type == "BUY" and current_price <= rec.stop_loss_hard:
-            return True, "HARD_STOP"
-        if rec.signal_type == "SELL" and current_price >= rec.stop_loss_hard:
-            return True, "HARD_STOP"
 
         return False, ""
 

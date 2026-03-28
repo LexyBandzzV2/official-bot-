@@ -98,10 +98,19 @@ class OrderManager:
 
     def update_trailing_stop(self, trade_id: str, new_sl: float) -> bool:
         """Push an updated stop loss to the broker (trailing ratchet)."""
+        return self.modify_position_sltp(trade_id, new_sl, new_tp=None)
+
+    def modify_position_sltp(
+        self,
+        trade_id: str,
+        new_sl: float,
+        new_tp: Optional[float] = None,
+    ) -> bool:
+        """Modify SL/TP on the open position (preserves TP when ``new_tp`` is None)."""
         info = self._ticket_map.get(trade_id)
         if info is None or self._adapter is None:
             return False
-        return self._adapter.update_stop_loss(info["order_id"], new_sl)
+        return self._adapter.modify_position_sltp(info["order_id"], new_sl, new_tp)
 
     # ── Reconciliation ─────────────────────────────────────────────────────────
 

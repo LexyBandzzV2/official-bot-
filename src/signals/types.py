@@ -91,7 +91,7 @@ class TradeRecord:
     # closed-trade fields (None while open)
     exit_time:        Optional[datetime] = None
     exit_price:       Optional[float]    = None
-    close_reason:     Optional[str]      = None  # ALLIGATOR_TP|TRAIL_STOP|HARD_STOP|MANUAL
+    close_reason:     Optional[str]      = None  # ALLIGATOR_TP|TRAILING_TP|TRAIL_STOP|HARD_STOP|MANUAL
     pnl:              float = 0.0
     pnl_pct:          float = 0.0
     max_trail_reached:float = 0.0

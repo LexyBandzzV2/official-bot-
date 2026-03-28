@@ -34,7 +34,11 @@ try:
     from src.risk.trailing_stop    import TrailingStop
     from src.indicators.alligator  import calculate_alligator, check_lips_touch_teeth_down, check_lips_touch_teeth_up
     from src.signals.types         import TradeRecord
-    from src.config                import MAX_RISK_PER_TRADE, STOP_LOSS_PCT, MAX_DAILY_DRAWDOWN, MAX_TRADES_PER_HOUR, ML_CONFIDENCE_THRESHOLD
+    from src.config                import (
+        MAX_RISK_PER_TRADE, STOP_LOSS_PCT, MAX_DAILY_DRAWDOWN, MAX_TRADES_PER_HOUR,
+        ML_CONFIDENCE_THRESHOLD, TRAILING_TP_ENABLED, TRAILING_TP_GIVEBACK,
+    )
+    from src.risk.trailing_take_profit import PeakGiveback
 except ImportError as e:
     log.error("Backtest import error: %s", e)
     raise
@@ -83,7 +87,7 @@ class Backtester:
         log.info("Backtest: %d HA candles loaded for %s %s", len(ha_df), symbol, timeframe)
 
         closed_trades: list[TradeRecord]      = []
-        open_positions: list[tuple[TradeRecord, TrailingStop]] = []
+        open_positions: list[tuple[TradeRecord, TrailingStop, Optional[PeakGiveback]]] = []
 
         balance      = self.account_balance
         daily_start  = self.account_balance
@@ -118,45 +122,45 @@ class Backtester:
                 trades_hour  = 0
 
             # ── Process open positions first ─────────────────────────────────
-            still_open: list[tuple[TradeRecord, TrailingStop]] = []
-            for rec, trail in open_positions:
-                # Update trailing stop with latest teeth value
+            ag_full = calculate_alligator(ha_df.iloc[: bar_idx + 1].copy())
+            still_open: list[tuple[TradeRecord, TrailingStop, Optional[PeakGiveback]]] = []
+            for rec, trail, tp_track in open_positions:
+                last_ag = ag_full.iloc[-1]
                 try:
-                    teeth_now = float(current_bar["teeth"]) if not np.isnan(current_bar.get("teeth", float("nan"))) else None
+                    teeth_now = float(last_ag["teeth"])
+                    if np.isnan(teeth_now):
+                        teeth_now = None
                 except Exception:
                     teeth_now = None
 
-                if teeth_now:
-                    old_stop = trail.current_stop
+                if teeth_now is not None:
                     new_stop = trail.update(teeth_now)
-                    rec.trailing_stop    = new_stop
-                    rec.max_trail_reached = max(rec.max_trail_reached, abs(new_stop - rec.entry_price))
+                    rec.trailing_stop = new_stop
+                    rec.max_trail_reached = max(
+                        rec.max_trail_reached, abs(new_stop - rec.entry_price)
+                    )
 
-                # Check exit conditions
-                close_reason: Optional[str] = None
+                if tp_track is not None:
+                    tp_track.update_bar(float(last_ag["high"]), float(last_ag["low"]))
+
                 close_price = float(current_bar["ha_close"])
+                close_reason: Optional[str] = None
 
-                # 1. Alligator TP: lips touches teeth
-                alligator_window = ha_df.iloc[max(0, bar_idx - 1):bar_idx + 1].copy()
-                alligator_window = calculate_alligator(alligator_window)
-                if len(alligator_window) >= 2:
-                    if rec.signal_type == "BUY":
-                        if check_lips_touch_teeth_down(alligator_window):
-                            close_reason = "ALLIGATOR_TP"
-                    else:
-                        if check_lips_touch_teeth_up(alligator_window):
-                            close_reason = "ALLIGATOR_TP"
-
-                # 2. Trailing stop
-                if close_reason is None and trail.is_triggered(close_price):
+                # Order matches risk_manager.check_exit_conditions:
+                # HARD_STOP → TRAILING_TP → TRAIL_STOP → ALLIGATOR_TP
+                if rec.signal_type == "BUY" and close_price <= rec.stop_loss_hard:
+                    close_reason = "HARD_STOP"
+                elif rec.signal_type == "SELL" and close_price >= rec.stop_loss_hard:
+                    close_reason = "HARD_STOP"
+                elif tp_track is not None and tp_track.is_triggered(close_price):
+                    close_reason = "TRAILING_TP"
+                elif trail.is_triggered(close_price):
                     close_reason = "TRAIL_STOP"
-
-                # 3. Hard stop
-                if close_reason is None:
-                    if rec.signal_type == "BUY"  and close_price <= rec.stop_loss_hard:
-                        close_reason = "HARD_STOP"
-                    elif rec.signal_type == "SELL" and close_price >= rec.stop_loss_hard:
-                        close_reason = "HARD_STOP"
+                elif len(ag_full) >= 2:
+                    if rec.signal_type == "BUY" and check_lips_touch_teeth_down(ag_full):
+                        close_reason = "ALLIGATOR_TP"
+                    elif rec.signal_type == "SELL" and check_lips_touch_teeth_up(ag_full):
+                        close_reason = "ALLIGATOR_TP"
 
                 if close_reason:
                     # Close the trade
@@ -183,7 +187,7 @@ class Backtester:
                     if daily_start > 0 and -(daily_pnl / daily_start) >= self.max_daily_dd:
                         kill_switch = True
                 else:
-                    still_open.append((rec, trail))
+                    still_open.append((rec, trail, tp_track))
 
             open_positions = still_open
 
@@ -225,13 +229,32 @@ class Backtester:
                 if size <= 0:
                     continue
 
-                teeth_now = float(current_bar.get("teeth", entry)) or entry
-                trail     = TrailingStop(
+                ag_at_entry = calculate_alligator(ha_df.iloc[: bar_idx + 1].copy())
+                try:
+                    teeth_now = float(ag_at_entry.iloc[-1]["teeth"])
+                    if np.isnan(teeth_now):
+                        teeth_now = entry
+                except Exception:
+                    teeth_now = entry
+
+                trail = TrailingStop(
                     direction    = "buy" if sig.signal_type == "BUY" else "sell",
                     entry_price  = entry,
                     initial_teeth= teeth_now,
                     stop_loss_pct= self.stop_loss_pct,
                 )
+
+                tp_track: Optional[PeakGiveback] = None
+                if TRAILING_TP_ENABLED:
+                    tp_track = PeakGiveback(
+                        direction="buy" if sig.signal_type == "BUY" else "sell",
+                        entry_price=entry,
+                        giveback_frac=TRAILING_TP_GIVEBACK,
+                    )
+                    tp_track.update_bar(
+                        float(current_bar["high"]),
+                        float(current_bar["low"]),
+                    )
 
                 rec = TradeRecord(
                     trade_id        = str(uuid.uuid4()),
@@ -253,7 +276,8 @@ class Backtester:
                     ml_confidence   = sig.ml_confidence,
                     max_trail_reached=0.0,
                 )
-                open_positions.append((rec, trail))
+                rec._trail_stop = trail  # type: ignore[attr-defined]
+                open_positions.append((rec, trail, tp_track))
                 trades_hour += 1
 
         # Mark any remaining open positions as still-open (no forced close at backtest end)

@@ -63,14 +63,14 @@ def print_buy_signal(sig: BuySignalResult) -> None:
     t.add_row("Signal Date/Time", f"[bold]{ts}[/bold]")
     t.add_row("Points",           f"[bold green]{sig.points}/3  ✓[/bold green]" if sig.points == 3 else f"{sig.points}/3")
     t.add_row("─" * 20,           "─" * 35)
-    t.add_row("Alligator",        f"{_tick(sig.alligator_point)}  Lips up through teeth + jaw")
+    t.add_row("Alligator",        f"{_tick(sig.alligator_point)}  Lips above teeth + jaw")
     t.add_row("Stochastic",       f"{_tick(sig.stochastic_point)}  K or D entered above 80")
     t.add_row("Vortex",           f"{_tick(sig.vortex_point)}  VI+ crossed above VI-")
     t.add_row("─" * 20,           "─" * 35)
     t.add_row("Entry Price",      f"[bold yellow]{_fmt_price(sig.entry_price)}[/bold yellow]")
     t.add_row("Stop Loss (2%)",   f"[red]{_fmt_price(sig.stop_loss)}  (hard floor)[/red]")
     t.add_row("Est. Move",        f"[green]{_fmt_pct(sig.profit_estimate_pct)}[/green]")
-    t.add_row("Exit Trigger",     "Lips crosses DOWN to Teeth (Alligator TP)")
+    t.add_row("Exit Trigger",     "Lips touches / crosses down to Teeth (exit long)")
 
     if sig.ai_confidence is not None:
         conf_col = "green" if sig.ai_confidence >= 60 else "yellow"
@@ -100,14 +100,14 @@ def print_sell_signal(sig: SellSignalResult) -> None:
     t.add_row("Signal Date/Time", f"[bold]{ts}[/bold]")
     t.add_row("Points",           f"[bold red]{sig.points}/3  ✓[/bold red]" if sig.points == 3 else f"{sig.points}/3")
     t.add_row("─" * 20,           "─" * 35)
-    t.add_row("Alligator",        f"{_tick(sig.alligator_point)}  Lips down through teeth + jaw")
+    t.add_row("Alligator",        f"{_tick(sig.alligator_point)}  Lips below teeth + jaw")
     t.add_row("Stochastic",       f"{_tick(sig.stochastic_point)}  K or D entered below 20")
     t.add_row("Vortex",           f"{_tick(sig.vortex_point)}  VI- crossed above VI+")
     t.add_row("─" * 20,           "─" * 35)
     t.add_row("Entry Price",      f"[bold yellow]{_fmt_price(sig.entry_price)}[/bold yellow]")
     t.add_row("Stop Loss (2%)",   f"[red]{_fmt_price(sig.stop_loss)}  (hard ceiling)[/red]")
     t.add_row("Est. Move",        f"[green]{_fmt_pct(sig.profit_estimate_pct)}[/green]")
-    t.add_row("Exit Trigger",     "Lips crosses UP to Teeth (Alligator TP)")
+    t.add_row("Exit Trigger",     "Lips touches / crosses up to Teeth (exit short)")
 
     if sig.ai_confidence is not None:
         conf_col = "green" if sig.ai_confidence >= 60 else "yellow"
@@ -169,7 +169,12 @@ def print_trade_closed(rec: TradeRecord) -> None:
     t.add_row("Duration",          duration)
     t.add_row("Entry Price",       _fmt_price(rec.entry_price))
     t.add_row("Exit  Price",       _fmt_price(rec.exit_price))  # type: ignore
-    t.add_row("Close Reason",      f"[bold]{rec.close_reason}[/bold]")
+    cr = rec.close_reason or "—"
+    if cr == "TRAILING_TP":
+        cr = "Trailing TP (peak giveback)"
+    else:
+        cr = str(cr).replace("_", " ").title()
+    t.add_row("Close Reason",      f"[bold]{cr}[/bold]")
     t.add_row("Max Trail Reached", _fmt_price(rec.max_trail_reached))
     t.add_row("PnL ($)",           f"[bold {pnl_col}]{sign}${rec.pnl:.2f}[/bold {pnl_col}]")
     t.add_row("PnL (%)",           f"[bold {pnl_col}]{sign}{rec.pnl_pct:.2f}%[/bold {pnl_col}]")

@@ -7,7 +7,8 @@ Buy and sell are two completely separate systems.
 All candles passed in MUST already be converted to Heikin Ashi.
 
 Signal rules:
-    Point 1 — Alligator: lips (green) crosses down through teeth (red) and jaw (blue)
+    Point 1 — Alligator: lips below both teeth and jaw (signal on first full completion;
+              may take multiple bars). No signal until both are crossed.
     Point 2 — Stochastic: first bar where K or D enters below 20
     Point 3 — Vortex: VI- crosses above VI+
     Entry   : all 3 within POINT_COMPLETION_WINDOW bars (confluence.py)
@@ -86,7 +87,7 @@ class SellSignalWorker:
             notification_message = (
                 f"SELL SIGNAL — {self.asset} {self.timeframe}\n"
                 f"Points: 3/3 confirmed\n"
-                f"Alligator: lips crossed down through teeth and jaw\n"
+                f"Alligator: lips finished below teeth and jaw (short)\n"
                 f"Stochastic: K or D entered below 20\n"
                 f"Vortex: VI- crossed above VI+\n"
                 f"Entry:     ${entry_price:.5f}\n"

@@ -26,7 +26,10 @@ import signal as _signal
 import threading
 import time
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from src.execution.broker_router import BrokerRouter
 
 import pytz
 
@@ -37,6 +40,7 @@ try:
         TIMEZONE, MAX_RISK_PER_TRADE, STOP_LOSS_PCT,
         MAX_DAILY_DRAWDOWN, MAX_TRADES_PER_HOUR, ACCOUNT_BALANCE,
         ML_CONFIDENCE_THRESHOLD, AI_CONFIDENCE_THRESHOLD,
+        TRAILING_TP_ENABLED, TRAILING_TP_GIVEBACK,
     )
     from src.data.heikin_ashi      import convert_to_heikin_ashi
     from src.data.market_data      import get_latest_candles
@@ -46,6 +50,7 @@ try:
     from src.risk.risk_manager     import RiskManager
     from src.risk.position_sizer   import calculate_position_size
     from src.risk.trailing_stop    import TrailingStop
+    from src.risk.trailing_take_profit import PeakGiveback
     from src.signals.types         import TradeRecord, BuySignalResult, SellSignalResult
     from src.scanner.candidate_ranker import score_symbol, rank_candidates
     from src.display.tables        import (
@@ -101,10 +106,20 @@ class MarketScanner:
             max_daily_drawdown     = MAX_DAILY_DRAWDOWN,
             max_trades_per_hour    = MAX_TRADES_PER_HOUR,
         )
-        # Active positions: trade_id → (TradeRecord, TrailingStop)
-        self._open: dict[str, tuple[TradeRecord, TrailingStop]] = {}
-        # Per-symbol SignalEngine instances
+        # trade_id → (TradeRecord, TrailingStop, optional PeakGiveback)
+        self._open: dict[str, tuple[TradeRecord, TrailingStop, Optional[PeakGiveback]]] = {}
         self._engines: dict[str, SignalEngine] = {}
+        self._broker: Optional["BrokerRouter"] = None
+        if not dry_run:
+            try:
+                from src.execution.broker_router import BrokerRouter
+                self._broker = BrokerRouter(dry_run=False)
+                if not self._broker.connect():
+                    log.warning("Broker connect failed — live orders disabled for this session")
+                    self._broker = None
+            except Exception as e:
+                log.warning("Broker init failed: %s — live orders disabled", e)
+                self._broker = None
 
     def _get_engine(self, symbol: str) -> SignalEngine:
         if symbol not in self._engines:
@@ -220,7 +235,8 @@ class MarketScanner:
                 self._open_position(sig, ha_df)
 
     def _open_position(self, sig: object, ha_df: object) -> None:
-        import uuid, numpy as np
+        import uuid
+        import numpy as np
         from src.signals.types import TradeRecord
         entry  = sig.entry_price
         sl     = sig.stop_loss
@@ -230,8 +246,9 @@ class MarketScanner:
         if size <= 0:
             return
 
-        last      = ha_df.iloc[-1]
-        teeth_now = float(last.get("teeth", entry) or entry)
+        ag_df = calculate_alligator(ha_df)
+        last  = ag_df.iloc[-1]
+        teeth_now = float(last["teeth"]) if not np.isnan(last["teeth"]) else float(entry)
 
         trail = TrailingStop(
             direction    = "buy" if sig.signal_type == "BUY" else "sell",
@@ -239,6 +256,15 @@ class MarketScanner:
             initial_teeth= teeth_now,
             stop_loss_pct= STOP_LOSS_PCT,
         )
+        tp_track: Optional[PeakGiveback] = None
+        if TRAILING_TP_ENABLED:
+            tp_track = PeakGiveback(
+                direction="buy" if sig.signal_type == "BUY" else "sell",
+                entry_price=entry,
+                giveback_frac=TRAILING_TP_GIVEBACK,
+            )
+            tp_track.update_bar(float(last["high"]), float(last["low"]))
+
         rec = TradeRecord(
             trade_id        = str(uuid.uuid4()),
             signal_type     = sig.signal_type,
@@ -259,84 +285,105 @@ class MarketScanner:
             ml_confidence   = sig.ml_confidence,
             ai_confidence   = sig.ai_confidence,
         )
-        self._open[rec.trade_id] = (rec, trail)
+        rec._trail_stop = trail  # type: ignore[attr-defined]
+
+        self._open[rec.trade_id] = (rec, trail, tp_track)
         self.risk_manager.record_opened_from_record(rec)
         save_trade_open(rec)
         log_trade_open(rec.trade_id, sig.signal_type, sig.asset, sig.timeframe,
                        entry, sl, trail.current_stop, size, MAX_RISK_PER_TRADE)
 
+        if self._broker:
+            try:
+                self._broker.place_order(
+                    signal_type=sig.signal_type,
+                    symbol=sig.asset,
+                    volume=size,
+                    expected_entry=entry,
+                    stop_loss=trail.current_stop,
+                    trade_id=rec.trade_id,
+                )
+            except Exception as e:
+                log.error("Broker place_order failed: %s", e)
+
     def _update_open_positions(self, ha_data: dict) -> None:
         import numpy as np
-        from src.indicators.alligator import calculate_alligator
         to_close: list[str] = []
 
-        for tid, (rec, trail) in list(self._open.items()):
+        for tid, (rec, trail, tp_track) in list(self._open.items()):
             ha_df = ha_data.get(rec.asset)
             if ha_df is None:
                 continue
 
-            last = ha_df.iloc[-1]
-            teeth_now = float(last.get("teeth", rec.entry_price) or rec.entry_price)
-            if not np.isnan(teeth_now):
-                old_stop = trail.current_stop
-                new_stop = trail.update(teeth_now)
-                if abs(new_stop - old_stop) > 1e-10:
-                    rec.trailing_stop = new_stop
-                    print_trail_update(rec.asset, old_stop, new_stop, rec.signal_type)
+            ag_df = calculate_alligator(ha_df)
+            last  = ag_df.iloc[-1]
+            teeth_now = float(last["teeth"])
+            if np.isnan(teeth_now):
+                teeth_now = float(rec.entry_price)
+
+            old_stop = trail.current_stop
+            new_stop = trail.update(teeth_now)
+            if abs(new_stop - old_stop) > 1e-10:
+                rec.trailing_stop = new_stop
+                print_trail_update(rec.asset, old_stop, new_stop, rec.signal_type)
+                if self._broker:
+                    try:
+                        self._broker.modify_position_sltp(
+                            rec.asset, tid, new_stop, None,
+                        )
+                    except Exception as e:
+                        log.debug("Broker SL update: %s", e)
+
+            if tp_track is not None:
+                tp_track.update_bar(float(last["high"]), float(last["low"]))
 
             close_price = float(last["ha_close"])
-            close_reason: Optional[str] = None
+            should_close, close_reason = self.risk_manager.check_exit_conditions(
+                tid,
+                close_price,
+                ha_df=ag_df,
+                peak_giveback=tp_track,
+            )
 
-            # Alligator TP check
-            alligator_df = calculate_alligator(ha_df)
-            if len(alligator_df) >= 2:
-                if rec.signal_type == "BUY":
-                    if check_lips_touch_teeth_down(alligator_df):
-                        close_reason = "ALLIGATOR_TP"
-                else:
-                    if check_lips_touch_teeth_up(alligator_df):
-                        close_reason = "ALLIGATOR_TP"
+            if not should_close:
+                continue
 
-            if close_reason is None and trail.is_triggered(close_price):
-                close_reason = "TRAIL_STOP"
+            if self._broker:
+                try:
+                    self._broker.close_order(rec.asset, tid)
+                except Exception as e:
+                    log.warning("Broker close_order: %s", e)
 
-            if close_reason is None:
-                if rec.signal_type == "BUY"  and close_price <= rec.stop_loss_hard:
-                    close_reason = "HARD_STOP"
-                elif rec.signal_type == "SELL" and close_price >= rec.stop_loss_hard:
-                    close_reason = "HARD_STOP"
+            if rec.signal_type == "BUY":
+                pnl_pct = (close_price - rec.entry_price) / rec.entry_price * 100
+            else:
+                pnl_pct = (rec.entry_price - close_price) / rec.entry_price * 100
+            pnl = pnl_pct / 100 * rec.position_size * rec.entry_price
 
-            if close_reason:
-                if rec.signal_type == "BUY":
-                    pnl_pct = (close_price - rec.entry_price) / rec.entry_price * 100
-                else:
-                    pnl_pct = (rec.entry_price - close_price) / rec.entry_price * 100
-                pnl = pnl_pct / 100 * rec.position_size * rec.entry_price
+            rec.exit_time    = datetime.now(_tz)
+            rec.exit_price   = close_price
+            rec.close_reason = close_reason
+            rec.pnl          = pnl
+            rec.pnl_pct      = pnl_pct
+            rec.status       = "CLOSED"
 
-                rec.exit_time    = datetime.now(_tz)
-                rec.exit_price   = close_price
-                rec.close_reason = close_reason
-                rec.pnl          = pnl
-                rec.pnl_pct      = pnl_pct
-                rec.status       = "CLOSED"
+            self.risk_manager.record_closed_pnl(tid, pnl)
+            save_trade_close(rec)
+            print_trade_closed(rec)
+            ts_str = datetime.now(_tz).strftime("%Y-%m-%d %H:%M:%S %Z")
+            notify_trade_closed(tid, rec.asset, rec.signal_type, pnl, pnl_pct, close_reason, ts_str)
+            log_trade_close(tid, rec.signal_type, rec.asset,
+                            rec.entry_time, rec.exit_time,
+                            rec.entry_price, close_price, close_reason, pnl, pnl_pct,
+                            rec.max_trail_reached)
 
-                self.risk_manager.record_closed_pnl(tid, pnl)
-                save_trade_close(rec)
-                print_trade_closed(rec)
-                ts_str = datetime.now(_tz).strftime("%Y-%m-%d %H:%M:%S %Z")
-                notify_trade_closed(tid, rec.asset, rec.signal_type, pnl, pnl_pct, close_reason, ts_str)
-                log_trade_close(tid, rec.signal_type, rec.asset,
-                                rec.entry_time, rec.exit_time,
-                                rec.entry_price, close_price, close_reason, pnl, pnl_pct,
-                                rec.max_trail_reached)
+            if self.risk_manager.is_kill_switch_active():
+                loss_pct = abs(self.risk_manager.daily_pnl / self.risk_manager.daily_start_balance * 100)
+                print_kill_switch(loss_pct)
+                log_kill_switch(loss_pct)
+                notify_kill_switch(loss_pct, ts_str)
 
-                if self.risk_manager.is_kill_switch_active():
-                    loss_pct = abs(self.risk_manager.daily_pnl / self.risk_manager.daily_start_balance * 100)
-                    print_kill_switch(loss_pct)
-                    log_kill_switch(loss_pct)
-                    notify_kill_switch(loss_pct, ts_str)
-
-                to_close.append(tid)
+            to_close.append(tid)
 
         for tid in to_close:
             self._open.pop(tid, None)
@@ -362,7 +409,7 @@ class MarketScanner:
         while not _stop_event.is_set():
             try:
                 self._scan_once()
-                print_active_signals(list(rec for rec, _ in self._open.values()))
+                print_active_signals(list(rec for rec, _, _ in self._open.values()))
             except Exception as e:
                 log.error("Scan cycle error: %s", e)
             # Sleep, but wake up if stop is signalled

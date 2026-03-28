@@ -96,13 +96,17 @@ def cmd_scan(ticker, scan_all, category, timeframe, historical, days, top):
 
     init_db()
 
+
     # Build symbol list
     if ticker:
         symbols = [ticker.upper()]
     elif category:
         symbols = get_symbols_by_class(category)
     elif scan_all:
-        symbols = get_all_symbols()
+        # Merge all catalogue symbols with all Kraken tradable pairs
+        from src.data.kraken_assets import get_kraken_pairs
+        kraken_pairs = get_kraken_pairs()
+        symbols = list(set(get_all_symbols()) | set(kraken_pairs))
     else:
         console.print("[red]Specify --ticker, --all, or --category[/]")
         raise SystemExit(1)

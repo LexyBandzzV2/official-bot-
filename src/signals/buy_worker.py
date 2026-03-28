@@ -8,7 +8,8 @@ All candles passed in MUST already be converted to Heikin Ashi.
 The worker trusts the caller has done this conversion.
 
 Signal rules:
-    Point 1 — Alligator: lips (green) crosses up through teeth (red) and jaw (blue)
+    Point 1 — Alligator: lips above both teeth and jaw (signal on first bar where that
+              is true; may take multiple bars to get there). No signal until both are crossed.
     Point 2 — Stochastic: first bar where K or D enters above 80
     Point 3 — Vortex: VI+ crosses above VI-
     Entry   : all 3 within POINT_COMPLETION_WINDOW bars (confluence.py)
@@ -90,7 +91,7 @@ class BuySignalWorker:
             notification_message = (
                 f"BUY SIGNAL — {self.asset} {self.timeframe}\n"
                 f"Points: 3/3 confirmed\n"
-                f"Alligator: lips crossed up through teeth and jaw\n"
+                f"Alligator: lips finished above teeth and jaw (long)\n"
                 f"Stochastic: K or D entered above 80\n"
                 f"Vortex: VI+ crossed above VI-\n"
                 f"Entry:     ${entry_price:.5f}\n"

@@ -177,20 +177,36 @@ class FPMarketsAdapter:
         log.info("Position #%d closed", position_ticket)
         return True
 
-    def update_stop_loss(self, position_ticket: int, new_sl: float) -> bool:
-        """Modify the stop loss of an existing position (trailing stop ratchet)."""
+    def modify_position_sltp(
+        self,
+        position_ticket: int,
+        new_sl: float,
+        new_tp: Optional[float] = None,
+    ) -> bool:
+        """Modify SL and optionally TP. If ``new_tp`` is None, keeps existing TP on the position."""
         if not self.is_connected():
             return False
+        positions = mt5.positions_get(ticket=position_ticket)
+        if not positions:
+            log.error("modify_position_sltp: position %d not found", position_ticket)
+            return False
+        pos = positions[0]
+        tp = float(pos.tp) if new_tp is None else float(new_tp)
         request = {
             "action":   mt5.TRADE_ACTION_SLTP,
             "position": position_ticket,
-            "sl":       new_sl,
+            "sl":       float(new_sl),
+            "tp":       tp,
         }
         result = mt5.order_send(request)
         if result is None or result.retcode != mt5.TRADE_RETCODE_DONE:
-            log.error("update_stop_loss failed: ticket=%d err=%s", position_ticket, mt5.last_error())
+            log.error("modify_position_sltp failed: ticket=%d err=%s", position_ticket, mt5.last_error())
             return False
         return True
+
+    def update_stop_loss(self, position_ticket: int, new_sl: float) -> bool:
+        """Modify the stop loss only; preserves existing take-profit."""
+        return self.modify_position_sltp(position_ticket, new_sl, new_tp=None)
 
     def get_account_balance(self) -> Optional[float]:
         if not self.is_connected():
