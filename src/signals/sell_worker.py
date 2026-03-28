@@ -6,8 +6,8 @@ Buy and sell are two completely separate systems.
 
 All candles passed in MUST already be converted to Heikin Ashi.
 
-Signal rules (Pine-aligned):
-    Point 1 — Alexis Alligator short entry (fractal breakout or crossunder(close,lips))
+Signal rules:
+    Point 1 — Alligator: lips (green) crosses down through teeth (red) and jaw (blue)
     Point 2 — Stochastic: first bar where K or D enters below 20
     Point 3 — Vortex: VI- crosses above VI+
     Entry   : all 3 within POINT_COMPLETION_WINDOW bars (confluence.py)
@@ -50,11 +50,9 @@ class SellSignalWorker:
         stoch_df     = calculate_stochastic(df)
         vortex_df    = calculate_vortex(df)
 
-        df["jaw"]              = alligator_df["jaw"]
-        df["teeth"]            = alligator_df["teeth"]
-        df["lips"]             = alligator_df["lips"]
-        df["last_up_fractal"]  = alligator_df["last_up_fractal"]
-        df["last_down_fractal"]= alligator_df["last_down_fractal"]
+        df["jaw"]   = alligator_df["jaw"]
+        df["teeth"] = alligator_df["teeth"]
+        df["lips"]  = alligator_df["lips"]
         df["stoch_k"]          = stoch_df["stoch_k"]
         df["stoch_d"]          = stoch_df["stoch_d"]
         df["vi_plus"]          = vortex_df["vi_plus"]
@@ -88,7 +86,7 @@ class SellSignalWorker:
             notification_message = (
                 f"SELL SIGNAL — {self.asset} {self.timeframe}\n"
                 f"Points: 3/3 confirmed\n"
-                f"Alligator: Alexis short entry (Pine)\n"
+                f"Alligator: lips crossed down through teeth and jaw\n"
                 f"Stochastic: K or D entered below 20\n"
                 f"Vortex: VI- crossed above VI+\n"
                 f"Entry:     ${entry_price:.5f}\n"
