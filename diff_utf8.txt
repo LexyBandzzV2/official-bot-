@@ -1,0 +1,410 @@
+﻿diff --git a/bot.py b/bot.py
+index 4a2d3f3..6c37f01 100644
+--- a/bot.py
++++ b/bot.py
+@@ -84,6 +84,7 @@ def cli():
+ @click.option("--days",       "-d",  default=30,    show_default=True, help="Days of history to scan")
+ @click.option("--top",              default=10,     show_default=True, help="Max candidates to deep-scan")
+ def cmd_scan(ticker, scan_all, category, timeframe, historical, days, top):
++
+     """Scan markets for BUY/SELL signals."""
+     _imports()
+     from src.data.heikin_ashi      import convert_to_heikin_ashi
+@@ -91,19 +92,17 @@ def cmd_scan(ticker, scan_all, category, timeframe, historical, days, top):
+     from src.data.symbol_mapper    import get_all_symbols, get_symbols_by_class, best_source
+     from src.signals.signal_engine import SignalEngine
+     from src.display.tables        import print_buy_signal, print_sell_signal
+-    from src.data.db               import init_db, save_signal
++    from src.data.db               import init_db, save_signal, get_recent_signals
+     from src.scanner.candidate_ranker import score_symbol, rank_candidates
+ 
+     init_db()
+ 
+-
+     # Build symbol list
+     if ticker:
+         symbols = [ticker.upper()]
+     elif category:
+         symbols = get_symbols_by_class(category)
+     elif scan_all:
+-        # Merge all catalogue symbols with all Kraken tradable pairs
+         from src.data.kraken_assets import get_kraken_pairs
+         kraken_pairs = get_kraken_pairs()
+         symbols = list(set(get_all_symbols()) | set(kraken_pairs))
+@@ -111,16 +110,15 @@ def cmd_scan(ticker, scan_all, category, timeframe, historical, days, top):
+         console.print("[red]Specify --ticker, --all, or --category[/]")
+         raise SystemExit(1)
+ 
+-    console.print(Panel(
+-        f"[bold cyan]Scanning {len(symbols)} symbol(s)[/]  TF: [yellow]{timeframe}[/]  "
+-        f"Mode: [green]{'HISTORICAL' if historical else 'LIVE'}[/]",
+-        title="AlgoBot Scan",
+-    ))
+-
+-    import pytz
+-    from src.config import TIMEZONE
+-    tz = pytz.timezone(TIMEZONE)
++    # Setup timezone
++    try:
++        from src.config import TIMEZONE
++        import pytz
++        tz = pytz.timezone(TIMEZONE)
++    except Exception:
++        tz = timezone.utc
+ 
++    # Main scan loop
+     for sym in symbols:
+         try:
+             if historical:
+@@ -171,67 +169,91 @@ def cmd_scan(ticker, scan_all, category, timeframe, historical, days, top):
+         except Exception as e:
+             console.print(f"[red]  {sym}: error ΓÇö {e}[/]")
+ 
++    # After scan, print last signal and timestamp for each symbol
++    for sym in symbols:
++        last_buy = next((s for s in get_recent_signals("BUY", 20) if s["asset"].upper() == sym.upper()), None)
++        last_sell = next((s for s in get_recent_signals("SELL", 20) if s["asset"].upper() == sym.upper()), None)
++        if last_buy and (not last_sell or last_buy["timestamp"] > last_sell["timestamp"]):
++            console.print(f"[bold cyan]{sym}[/bold cyan] ΓÇö Last Signal: [green]BUY[/green] at [yellow]{last_buy['timestamp']}[/yellow]")
++        elif last_sell:
++            console.print(f"[bold cyan]{sym}[/bold cyan] ΓÇö Last Signal: [red]SELL[/red] at [yellow]{last_sell['timestamp']}[/yellow]")
++        else:
++            console.print(f"[bold cyan]{sym}[/bold cyan] ΓÇö No signals found.")
++    return
++
++    # Setup timezone
++    try:
++        from src.config import TIMEZONE
++        import pytz
++        tz = pytz.timezone(TIMEZONE)
++    except Exception:
++        tz = timezone.utc
++
++    # Main scan loop
++    for sym in symbols:
++        try:
++            if historical:
++                start = datetime.now(timezone.utc) - timedelta(days=days)
++                raw   = get_historical_ohlcv(sym, timeframe, start=start, source=best_source(sym))
++            else:
++                raw   = get_latest_candles(sym, timeframe, count=200, source=best_source(sym))
++
++            if raw.empty:
++                console.print(f"[dim]  {sym}: no data[/]")
++                continue
+ 
+-# ΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉ
+-#  signals
+-# ΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉ
++            ha_df  = convert_to_heikin_ashi(raw)
++            engine = SignalEngine(sym, timeframe)
++            result = engine.evaluate_ha(ha_df)
+ 
+-@cli.command("signals")
+-@click.option("--history",    is_flag=True,   help="Show recent signal history")
+-@click.option("--open",       "show_open", is_flag=True, help="Show currently open positions")
+-@click.option("--type",       "sig_type",  default=None, type=click.Choice(["BUY","SELL"], case_sensitive=False))
+-@click.option("--ticker",     "-t", default=None, help="Filter by symbol")
+-@click.option("--date",       default=None, help="Filter by date (YYYY-MM-DD)")
+-@click.option("--limit",  "-n", default=50, show_default=True, help="Number of records to show")
+-def cmd_signals(history, show_open, sig_type, ticker, date, limit):
+-    """View signal history or open positions."""
+-    _imports()
+-    from src.data.db import get_recent_signals, get_open_trades
+-    from src.display.tables import print_signal_history, print_active_signals
+-    from src.signals.types import TradeRecord
+-
+-    if show_open:
+-        rows = get_open_trades()
+-        # Reconstruct lightweight TradeRecord-like objects for display
+-        recs = []
+-        for r in rows:
+-            try:
+-                rec = TradeRecord(
+-                    trade_id=r["trade_id"], signal_type=r["signal_type"],
+-                    asset=r["asset"], timeframe=r["timeframe"],
+-                    entry_time=datetime.fromisoformat(r["entry_time"]),
+-                    entry_price=r["entry_price"], stop_loss_hard=r["stop_loss_hard"],
+-                    trailing_stop=r["trailing_stop"], position_size=r["position_size"],
+-                    account_risk_pct=r["account_risk_pct"],
+-                    alligator_point=bool(r.get("alligator_pt",0)),
+-                    stochastic_point=bool(r.get("stochastic_pt",0)),
+-                    vortex_point=bool(r.get("vortex_pt",0)),
+-                    jaw_at_entry=r.get("jaw_at_entry",0) or 0,
+-                    teeth_at_entry=r.get("teeth_at_entry",0) or 0,
+-                    lips_at_entry=r.get("lips_at_entry",0) or 0,
++            buy  = result.get("buy")
++            sell = result.get("sell")
++            conflict = result.get("conflict", False)
++
++            if conflict:
++                console.print(f"[yellow]  {sym}: CONFLICT ΓÇö both signals fired simultaneously, both suppressed[/]")
++                continue
++
++            if buy and buy.is_valid:
++                buy.timestamp = datetime.now(tz)
++                print_buy_signal(buy)
++                save_signal(buy)
++            elif sell and sell.is_valid:
++                sell.timestamp = datetime.now(tz)
++                print_sell_signal(sell)
++                save_signal(sell)
++            else:
++                pts_b = buy.points  if buy  else 0
++                pts_s = sell.points if sell else 0
++                hb = buy.signals_in_history  if buy  else 0
++                hs = sell.signals_in_history if sell else 0
++                hist_lbl = f"{days}d hist" if historical else "series"
++                console.print(
++                    f"[dim]  {sym}: No live bar signal  "
++                    f"(pts buy={pts_b}/3 sell={pts_s}/3)  "
++                    f"[{hist_lbl}: {hb} buy / {hs} sell completions][/]"
+                 )
+-                recs.append(rec)
+-            except Exception:
+-                pass
+-        if ticker:
+-            recs = [r for r in recs if r.asset.upper() == ticker.upper()]
+-        if recs:
+-            print_active_signals(recs)
++
++        except KeyboardInterrupt:
++            console.print("\n[yellow]Scan interrupted.[/]")
++            break
++        except Exception as e:
++            console.print(f"[red]  {sym}: error ΓÇö {e}[/]")
++
++    # After scan, print last signal and timestamp for each symbol
++    from src.data.db import get_recent_signals
++    for sym in symbols:
++        last_buy = next((s for s in get_recent_signals("BUY", 20) if s["asset"].upper() == sym.upper()), None)
++        last_sell = next((s for s in get_recent_signals("SELL", 20) if s["asset"].upper() == sym.upper()), None)
++        if last_buy and (not last_sell or last_buy["timestamp"] > last_sell["timestamp"]):
++            console.print(f"[bold cyan]{sym}[/bold cyan] ΓÇö Last Signal: [green]BUY[/green] at [yellow]{last_buy['timestamp']}[/yellow]")
++        elif last_sell:
++            console.print(f"[bold cyan]{sym}[/bold cyan] ΓÇö Last Signal: [red]SELL[/red] at [yellow]{last_sell['timestamp']}[/yellow]")
+         else:
+-            console.print("[dim]No open positions.[/]")
+-        return
++            console.print(f"[bold cyan]{sym}[/bold cyan] ΓÇö No signals found.")
++    return
++
+ 
+-    if history or not show_open:
+-        for stype in (["BUY", "SELL"] if not sig_type else [sig_type.upper()]):
+-            rows = get_recent_signals(stype, limit=limit)
+-            if ticker:
+-                rows = [r for r in rows if str(r.get("asset","")).upper() == ticker.upper()]
+-            if date:
+-                rows = [r for r in rows if str(r.get("timestamp","")).startswith(date)]
+-            if rows:
+-                print_signal_history(rows)
+-            else:
+-                console.print(f"[dim]No {stype} signals found.[/]")
+ 
+ 
+ # ΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉ
+@@ -257,43 +279,6 @@ def cmd_trades(log, today, pnl, ticker, limit):
+         today_str = datetime.now().strftime("%Y-%m-%d")
+         rows = [r for r in rows if (r.get("exit_time") or "").startswith(today_str)]
+ 
+-    if not rows:
+-        console.print("[dim]No closed trades found.[/]")
+-        return
+-
+-    if pnl or not log:
+-        print_pnl_summary(rows)
+-
+-    if log:
+-        tbl = Table(title="Trade Log", box=box.HEAVY_HEAD, show_lines=True)
+-        tbl.add_column("ID",      width=8)
+-        tbl.add_column("Type",    width=5)
+-        tbl.add_column("Asset",   width=10)
+-        tbl.add_column("Entry",   width=17)
+-        tbl.add_column("Exit",    width=17)
+-        tbl.add_column("Entry $", width=12, justify="right")
+-        tbl.add_column("Exit $",  width=12, justify="right")
+-        tbl.add_column("PnL %",   width=10, justify="right")
+-        tbl.add_column("Reason",  width=14)
+-        for r in rows:
+-            pnl_v   = float(r.get("pnl_pct", 0))
+-            pnl_str = f"{pnl_v:+.2f}%"
+-            col     = f"[green]{pnl_str}[/]" if pnl_v >= 0 else f"[red]{pnl_str}[/]"
+-            t_col   = "[green]BUY[/]" if r.get("signal_type") == "BUY" else "[red]SELL[/]"
+-            tbl.add_row(
+-                str(r.get("trade_id",""))[:8],
+-                t_col,
+-                str(r.get("asset","")),
+-                str(r.get("entry_time",""))[:16],
+-                str(r.get("exit_time",""))[:16],
+-                f"{r.get('entry_price',0):.5f}",
+-                f"{r.get('exit_price',0):.5f}" if r.get("exit_price") else "ΓÇö",
+-                col,
+-                str(r.get("close_reason","")).replace("_"," ").title(),
+-            )
+-        console.print(tbl)
+-
+-
+ # ΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉ
+ #  backtest
+ # ΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉΓòÉ
+@@ -437,17 +422,19 @@ def cmd_status(risk):
+         console.print(tbl)
+         return
+ 
++    # Calculate required values for print_status
++    account_balance = ACCOUNT_BALANCE
++    daily_loss_pct = daily_pnl_pct if 'daily_pnl_pct' in locals() else 0.0
++    open_count = open_count
++    hourly_remaining = MAX_TRADES_PER_HOUR  # or another variable if available
++    scanner_running = True  # or set based on actual scanner state if available
++
+     print_status(
+-        lm_studio_ok     = lm_ok,
+-        openrouter_ok    = or_ok,
+-        finnhub_ok       = bool(FINNHUB_API_KEY),
+-        supabase_ok      = bool(SUPABASE_URL),
+-        ml_ready         = ml_st["model_available"],
+-        ml_samples       = ml_st["total_samples"],
+-        open_trades      = open_count,
+-        closed_trades    = closed_count,
+-        account_balance  = ACCOUNT_BALANCE,
+-        timezone         = TIMEZONE,
++        account_balance=account_balance,
++        daily_loss_pct=daily_loss_pct,
++        open_count=open_count,
++        hourly_remaining=hourly_remaining,
++        scanner_running=scanner_running,
+     )
+ 
+ 
+@@ -483,57 +470,59 @@ def cmd_start(timeframe, ticker, category, dry_run, live, top, balance):
+         console.print(Panel(
+             "[bold red]ΓÜá  LIVE TRADING MODE ΓÇö Real orders will be submitted to FP Markets.[/]\n"
+             "Press Ctrl+C at any time to stop cleanly.",
+-            border_style="red",
+-        ))
+-    else:
+-        console.print(Panel("[bold green]DRY RUN ΓÇö Signals will be displayed; no orders sent.[/]"))
+-
+-    if ticker:
+-        symbols = [ticker.upper()]
+-    elif category:
+-        symbols = get_symbols_by_class(category)
+-    else:
+-        symbols = get_all_symbols()
+-
+-    scanner = MarketScanner(
+-        symbols          = symbols,
+-        timeframe        = timeframe,
+-        top_candidates   = top,
+-        dry_run          = actual_dry_run,
+-        account_balance  = balance or ACCOUNT_BALANCE,
+-    )
+-
+-    if live:
+-        from src.execution.broker_router import BrokerRouter
+-        router = BrokerRouter(dry_run=False)
+-        if not router.connect():
+-            console.print("[red]Could not connect to FP Markets MT5. Aborting.[/]")
+-            raise SystemExit(1)
+ 
+-    scanner.start()
++                console.print(f"[dim]  {sym}: no data[/]")
++                continue
+ 
++            ha_df  = convert_to_heikin_ashi(raw)
++            engine = SignalEngine(sym, timeframe)
++            result = engine.evaluate_ha(ha_df)
+ 
+-@cli.command("stop")
+-def cmd_stop():
+-    """Write a stop signal for a running bot instance.
++            buy  = result.get("buy")
++            sell = result.get("sell")
++            conflict = result.get("conflict", False)
+ 
+-    This creates a 'stop.flag' file that the scanner checks each cycle.
+-    For immediate stop, press Ctrl+C on the running process.
+-    """
+-    Path("stop.flag").write_text("stop")
+-    console.print("[yellow]Stop flag written. The scanner will halt after the current cycle.[/]")
++            if conflict:
++                console.print(f"[yellow]  {sym}: CONFLICT ΓÇö both signals fired simultaneously, both suppressed[/]")
++                continue
+ 
++            if buy and buy.is_valid:
++                buy.timestamp = datetime.now(tz)
++                print_buy_signal(buy)
++                save_signal(buy)
++            elif sell and sell.is_valid:
++                sell.timestamp = datetime.now(tz)
++                print_sell_signal(sell)
++                save_signal(sell)
++            else:
++                pts_b = buy.points  if buy  else 0
++                pts_s = sell.points if sell else 0
++                hb = buy.signals_in_history  if buy  else 0
++                hs = sell.signals_in_history if sell else 0
++                hist_lbl = f"{days}d hist" if historical else "series"
++                console.print(
++                    f"[dim]  {sym}: No live bar signal  "
++                    f"(pts buy={pts_b}/3 sell={pts_s}/3)  "
++                    f"[{hist_lbl}: {hb} buy / {hs} sell completions][/]")
+ 
+-@cli.command("restart")
+-@click.pass_context
+-def cmd_restart(ctx):
+-    """Stop the current scanner and immediately restart it.
++        except KeyboardInterrupt:
++            console.print("\n[yellow]Scan interrupted.[/]")
++            break
++        except Exception as e:
++            console.print(f"[red]  {sym}: error ΓÇö {e}[/]")
+ 
+-    Writes stop.flag, then invokes 'start' with the same defaults.
+-    """
+-    Path("stop.flag").write_text("stop")
+-    console.print("[yellow]Stop flag written. Restarting scanner...[/]")
+-    import time as _t
++    # After scan, print last signal and timestamp for each symbol
++    from src.data.db import get_recent_signals
++    for sym in symbols:
++        last_buy = next((s for s in get_recent_signals("BUY", 20) if s["asset"].upper() == sym.upper()), None)
++        last_sell = next((s for s in get_recent_signals("SELL", 20) if s["asset"].upper() == sym.upper()), None)
++        if last_buy and (not last_sell or last_buy["timestamp"] > last_sell["timestamp"]):
++            console.print(f"[bold cyan]{sym}[/bold cyan] ΓÇö Last Signal: [green]BUY[/green] at [yellow]{last_buy['timestamp']}[/yellow]")
++        elif last_sell:
++            console.print(f"[bold cyan]{sym}[/bold cyan] ΓÇö Last Signal: [red]SELL[/red] at [yellow]{last_sell['timestamp']}[/yellow]")
++        else:
++            console.print(f"[bold cyan]{sym}[/bold cyan] ΓÇö No signals found.")
++    return
+     _t.sleep(2)  # give the running scanner a moment to see the flag
+     if Path("stop.flag").exists():
+         Path("stop.flag").unlink()
+diff --git a/src/signals/buy_worker.py b/src/signals/buy_worker.py
+index 347acc6..b7dface 100644
+--- a/src/signals/buy_worker.py
++++ b/src/signals/buy_worker.py
+@@ -65,7 +65,11 @@ class BuySignalWorker:
+ 
+         # ΓöÇΓöÇ 3-point confluence (rolling window) ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+         ab = analyze_buy(df)
+-        is_valid         = ab["valid_last"]
++        completions = ab["completions"]
++        window = 10  # match POINT_COMPLETION_WINDOW
++        last_i = len(df) - 1
++        # Signal valid if a completion occurred within the last 10 bars
++        is_valid = any(c >= last_i - window + 1 for c in completions)
+         points           = ab["points"]
+         alligator_point  = ab["alligator_point"]
+         stochastic_point = ab["stochastic_point"]
+@@ -90,7 +94,7 @@ class BuySignalWorker:
+         if is_valid:
+             notification_message = (
+                 f"BUY SIGNAL ΓÇö {self.asset} {self.timeframe}\n"
+-                f"Points: 3/3 confirmed\n"
++                f"Points: 3/3 confirmed (within last {window} bars)\n"
+                 f"Alligator: lips finished above teeth and jaw (long)\n"
+                 f"Stochastic: K or D entered above 80\n"
+                 f"Vortex: VI+ crossed above VI-\n"

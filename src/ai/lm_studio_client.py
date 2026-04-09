@@ -35,7 +35,11 @@ class LMStudioClient:
         model:    str  = LM_STUDIO_MODEL,
         timeout:  int  = 30,
     ) -> None:
-        self.base_url = base_url.rstrip("/")
+        base = (base_url or "http://localhost:1234/v1").rstrip("/")
+        # Accept either host root (http://127.0.0.1:1234) or OpenAI path (.../v1).
+        if not base.endswith("/v1"):
+            base = f"{base}/v1"
+        self.base_url = base
         self.model    = model
         self.timeout  = timeout
 

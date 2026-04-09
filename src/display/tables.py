@@ -23,15 +23,17 @@ from src.signals.types import BuySignalResult, SellSignalResult, TradeRecord
 console = Console()
 
 try:
-    from src.config import TIMEZONE
+    from src.config import TIMEZONE, ML_CONFIDENCE_THRESHOLD, AI_CONFIDENCE_THRESHOLD
 except ImportError:
     TIMEZONE = "America/Toronto"
+    ML_CONFIDENCE_THRESHOLD = 0.65
+    AI_CONFIDENCE_THRESHOLD = 0.60
 
 _tz = pytz.timezone(TIMEZONE)
 
 
 def _now_str() -> str:
-    return datetime.now(_tz).strftime("%Y-%m-%d  %H:%M:%S %Z")
+    return datetime.now(_tz).strftime("%Y-%m-%d  %I:%M:%S %p %Z")
 
 
 def _fmt_price(p: float) -> str:
@@ -50,7 +52,7 @@ def _tick(val: bool) -> str:
 # ── BUY signal ────────────────────────────────────────────────────────────────
 
 def print_buy_signal(sig: BuySignalResult) -> None:
-    ts = sig.timestamp.astimezone(_tz).strftime("%Y-%m-%d  %H:%M:%S %Z")
+    ts = sig.timestamp.astimezone(_tz).strftime("%Y-%m-%d  %I:%M:%S %p %Z")
 
     t = Table(box=box.HEAVY_HEAD, show_header=False, padding=(0, 1),
               border_style="green")
@@ -60,6 +62,7 @@ def print_buy_signal(sig: BuySignalResult) -> None:
     t.add_row("Symbol",           f"[bold cyan]{sig.asset}[/bold cyan]")
     t.add_row("Asset Class",      _asset_class_label(sig.asset))
     t.add_row("Timeframe",        sig.timeframe)
+    t.add_row("Strategy Mode",    f"[bold]{getattr(sig, 'strategy_mode', 'UNKNOWN')}[/bold]")
     t.add_row("Signal Date/Time", f"[bold]{ts}[/bold]")
     t.add_row("Points",           f"[bold green]{sig.points}/3  ✓[/bold green]" if sig.points == 3 else f"{sig.points}/3")
     t.add_row("─" * 20,           "─" * 35)
@@ -73,11 +76,11 @@ def print_buy_signal(sig: BuySignalResult) -> None:
     t.add_row("Exit Trigger",     "Lips touches / crosses down to Teeth (exit long)")
 
     if sig.ai_confidence is not None:
-        conf_col = "green" if sig.ai_confidence >= 60 else "yellow"
-        t.add_row("AI Confidence", f"[{conf_col}]{sig.ai_confidence:.0f}%  (LM Studio)[/{conf_col}]")
+        conf_col = "green" if sig.ai_confidence >= AI_CONFIDENCE_THRESHOLD else "yellow"
+        t.add_row("AI Confidence", f"[{conf_col}]{sig.ai_confidence*100:.0f}%  (LM Studio)[/{conf_col}]")
     if sig.ml_confidence is not None:
-        ml_col = "green" if sig.ml_confidence >= 0.60 else "yellow"
-        label  = "PASS" if sig.ml_confidence >= 0.60 else "WARN"
+        ml_col = "green" if sig.ml_confidence >= ML_CONFIDENCE_THRESHOLD else "yellow"
+        label  = "PASS" if sig.ml_confidence >= ML_CONFIDENCE_THRESHOLD else "WARN"
         t.add_row("ML Filter", f"[{ml_col}]{label} — predicted win prob: {sig.ml_confidence*100:.0f}%[/{ml_col}]")
 
     console.print(Panel(t, title="[bold green]🟢  BUY SIGNAL[/bold green]",
@@ -87,7 +90,7 @@ def print_buy_signal(sig: BuySignalResult) -> None:
 # ── SELL signal ───────────────────────────────────────────────────────────────
 
 def print_sell_signal(sig: SellSignalResult) -> None:
-    ts = sig.timestamp.astimezone(_tz).strftime("%Y-%m-%d  %H:%M:%S %Z")
+    ts = sig.timestamp.astimezone(_tz).strftime("%Y-%m-%d  %I:%M:%S %p %Z")
 
     t = Table(box=box.HEAVY_HEAD, show_header=False, padding=(0, 1),
               border_style="red")
@@ -97,6 +100,7 @@ def print_sell_signal(sig: SellSignalResult) -> None:
     t.add_row("Symbol",           f"[bold cyan]{sig.asset}[/bold cyan]")
     t.add_row("Asset Class",      _asset_class_label(sig.asset))
     t.add_row("Timeframe",        sig.timeframe)
+    t.add_row("Strategy Mode",    f"[bold]{getattr(sig, 'strategy_mode', 'UNKNOWN')}[/bold]")
     t.add_row("Signal Date/Time", f"[bold]{ts}[/bold]")
     t.add_row("Points",           f"[bold red]{sig.points}/3  ✓[/bold red]" if sig.points == 3 else f"{sig.points}/3")
     t.add_row("─" * 20,           "─" * 35)
@@ -110,11 +114,11 @@ def print_sell_signal(sig: SellSignalResult) -> None:
     t.add_row("Exit Trigger",     "Lips touches / crosses up to Teeth (exit short)")
 
     if sig.ai_confidence is not None:
-        conf_col = "green" if sig.ai_confidence >= 60 else "yellow"
-        t.add_row("AI Confidence", f"[{conf_col}]{sig.ai_confidence:.0f}%  (LM Studio)[/{conf_col}]")
+        conf_col = "green" if sig.ai_confidence >= AI_CONFIDENCE_THRESHOLD else "yellow"
+        t.add_row("AI Confidence", f"[{conf_col}]{sig.ai_confidence*100:.0f}%  (LM Studio)[/{conf_col}]")
     if sig.ml_confidence is not None:
-        ml_col = "green" if sig.ml_confidence >= 0.60 else "yellow"
-        label  = "PASS" if sig.ml_confidence >= 0.60 else "WARN"
+        ml_col = "green" if sig.ml_confidence >= ML_CONFIDENCE_THRESHOLD else "yellow"
+        label  = "PASS" if sig.ml_confidence >= ML_CONFIDENCE_THRESHOLD else "WARN"
         t.add_row("ML Filter", f"[{ml_col}]{label} — predicted win prob: {sig.ml_confidence*100:.0f}%[/{ml_col}]")
 
     console.print(Panel(t, title="[bold red]🔴  SELL SIGNAL[/bold red]",
@@ -124,7 +128,7 @@ def print_sell_signal(sig: SellSignalResult) -> None:
 # ── Order placed ─────────────────────────────────────────────────────────────
 
 def print_order_placed(rec: TradeRecord, fill_price: float, slippage_pips: float = 0.0) -> None:
-    ts = rec.entry_time.astimezone(_tz).strftime("%Y-%m-%d  %H:%M:%S %Z")
+    ts = rec.entry_time.astimezone(_tz).strftime("%Y-%m-%d  %I:%M:%S %p %Z")
     color = "green" if rec.signal_type == "BUY" else "red"
 
     t = Table(box=box.HEAVY_HEAD, show_header=False, padding=(0, 1),
@@ -149,8 +153,8 @@ def print_order_placed(rec: TradeRecord, fill_price: float, slippage_pips: float
 # ── Trade closed ─────────────────────────────────────────────────────────────
 
 def print_trade_closed(rec: TradeRecord) -> None:
-    entry_ts = rec.entry_time.astimezone(_tz).strftime("%Y-%m-%d  %H:%M:%S %Z")
-    exit_ts  = rec.exit_time.astimezone(_tz).strftime("%Y-%m-%d  %H:%M:%S %Z")  # type: ignore
+    entry_ts = rec.entry_time.astimezone(_tz).strftime("%Y-%m-%d  %I:%M:%S %p %Z")
+    exit_ts  = rec.exit_time.astimezone(_tz).strftime("%Y-%m-%d  %I:%M:%S %p %Z")  # type: ignore
     duration = str(rec.exit_time - rec.entry_time).split(".")[0]  # type: ignore
 
     pnl_col  = "green" if rec.pnl >= 0 else "red"
@@ -164,16 +168,24 @@ def print_trade_closed(rec: TradeRecord) -> None:
 
     t.add_row("Symbol",            f"[bold cyan]{rec.asset}[/bold cyan]")
     t.add_row("Direction",         f"[bold {dir_col}]{rec.signal_type}[/bold {dir_col}]")
+    t.add_row("Strategy Mode",     f"[bold]{getattr(rec, 'strategy_mode', 'UNKNOWN')}[/bold]")
     t.add_row("Entry Date/Time",   f"[bold]{entry_ts}[/bold]")
     t.add_row("Exit  Date/Time",   f"[bold]{exit_ts}[/bold]")
     t.add_row("Duration",          duration)
     t.add_row("Entry Price",       _fmt_price(rec.entry_price))
     t.add_row("Exit  Price",       _fmt_price(rec.exit_price))  # type: ignore
     cr = rec.close_reason or "—"
-    if cr == "TRAILING_TP":
-        cr = "Trailing TP (peak giveback)"
-    else:
-        cr = str(cr).replace("_", " ").title()
+    # Canonical label mapping for human-readable display.
+    # TRAILING_TP alias handles any legacy DB rows not yet migrated.
+    _REASON_LABELS = {
+        "PEAK_GIVEBACK_EXIT": "Peak Giveback Exit",
+        "TRAILING_TP":        "Peak Giveback Exit",  # legacy alias
+        "HARD_STOP":          "Hard Stop",
+        "TRAIL_STOP":         "Trailing Stop",
+        "ALLIGATOR_TP":       "Alligator TP",
+        "MANUAL":             "Manual",
+    }
+    cr = _REASON_LABELS.get(cr, str(cr).replace("_", " ").title())
     t.add_row("Close Reason",      f"[bold]{cr}[/bold]")
     t.add_row("Max Trail Reached", _fmt_price(rec.max_trail_reached))
     t.add_row("PnL ($)",           f"[bold {pnl_col}]{sign}${rec.pnl:.2f}[/bold {pnl_col}]")
@@ -210,7 +222,7 @@ def print_active_signals(records: List[TradeRecord]) -> None:
             _asset_class_label(rec.asset, plain=True),
             f"[{dir_col}]{rec.signal_type}[/{dir_col}]",
             _fmt_price(rec.entry_price),
-            rec.entry_time.astimezone(_tz).strftime("%Y-%m-%d %H:%M"),
+            rec.entry_time.astimezone(_tz).strftime("%Y-%m-%d %I:%M %p"),
             _fmt_price(rec.trailing_stop),
             f"{rec.ai_confidence:.0f}%" if rec.ai_confidence else "—",
         )
@@ -228,6 +240,7 @@ def print_signal_history(rows: list, title: str = "SIGNAL HISTORY") -> None:
     t.add_column("#",          style="dim",         no_wrap=True)
     t.add_column("Date/Time",  style="dim",         no_wrap=True)
     t.add_column("Symbol",     style="bold cyan",   no_wrap=True)
+    t.add_column("Mode",       style="white",       no_wrap=True)
     t.add_column("Dir",        style="bold",        no_wrap=True)
     t.add_column("Pts",        style="white",       no_wrap=True)
     t.add_column("Entry",      style="yellow",      no_wrap=True)
@@ -245,6 +258,7 @@ def print_signal_history(rows: list, title: str = "SIGNAL HISTORY") -> None:
             str(i),
             str(r.get("entry_time", ""))[:16],
             r.get("asset", "?"),
+            r.get("strategy_mode", "—"),
             f"[{dc}]{dir_}[/{dc}]",
             f"{r.get('points',0)}/3",
             _fmt_price(r.get("entry_price", 0)),
@@ -260,7 +274,7 @@ def print_signal_history(rows: list, title: str = "SIGNAL HISTORY") -> None:
 def print_trail_update(
     asset: str, old_stop: float, new_stop: float, direction: str
 ) -> None:
-    ts = datetime.now(_tz).strftime("%H:%M:%S")
+    ts = datetime.now(_tz).strftime("%I:%M:%S %p")
     locked_dir = "▲" if direction == "buy" else "▼"
     console.print(
         f"[dim]{ts}[/dim]  [cyan]{asset}[/cyan] "

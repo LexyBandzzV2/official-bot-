@@ -25,6 +25,7 @@ from src.indicators.stochastic import calculate_stochastic
 from src.indicators.vortex     import calculate_vortex
 from src.signals.confluence    import analyze_buy
 from src.signals.types import BuySignalResult
+from src.signals.strategy_mode import timeframe_to_mode
 
 
 class BuySignalWorker:
@@ -65,7 +66,62 @@ class BuySignalWorker:
 
         # ── 3-point confluence (rolling window) ───────────────────────────────
         ab = analyze_buy(df)
-        is_valid         = ab["valid_last"]
+        completions = ab["completions"]
+        window = 10  # match POINT_COMPLETION_WINDOW
+        # Signal valid if all 3 points met within last 10 candles
+        is_valid = ab["valid_last"]
+        
+        # Resolve proper datetime for last signal
+        # If valid (all 3 fired in last window): find the most recent event bar
+        # Otherwise: fall back to the last full completion bar in history
+        last_signal_str = None
+
+        def _bar_to_ts(df, idx):
+            """Get a human-readable datetime string from a DataFrame bar index."""
+            import pandas as pd
+            if "timestamp" in df.columns:
+                ts = df["timestamp"].iloc[idx]
+            elif hasattr(df.index, "dtype") and str(df.index.dtype).startswith("datetime"):
+                ts = df.index[idx]
+            elif "time" in df.columns:
+                ts = df["time"].iloc[idx]
+            else:
+                ts = df.index[idx]
+            try:
+                if isinstance(ts, (int, float)):
+                    return None
+                
+                from src.config import TIMEZONE
+                import pytz
+                
+                dt = pd.Timestamp(ts)
+                if dt.tz is None:
+                    dt = dt.tz_localize('UTC')
+                dt = dt.tz_convert(TIMEZONE)
+                return dt.strftime("%Y-%m-%d  %I:%M %p")
+            except Exception:
+                return str(ts)
+
+        if is_valid:
+            # Find the last bar in the recent window where any indicator fired
+            n = len(df)
+            start_idx = max(0, n - window)
+            from src.indicators.alligator  import alligator_buy_event
+            from src.indicators.stochastic import stochastic_buy_event
+            from src.indicators.vortex     import vortex_buy_event
+            last_event_idx = None
+            for i in range(n - 1, start_idx - 1, -1):
+                if i == 0:
+                    continue
+                prev, curr = df.iloc[i - 1], df.iloc[i]
+                if alligator_buy_event(prev, curr) or stochastic_buy_event(prev, curr) or vortex_buy_event(prev, curr):
+                    last_event_idx = i
+                    break
+            if last_event_idx is not None:
+                last_signal_str = _bar_to_ts(df, last_event_idx)
+        elif completions:
+            last_signal_str = _bar_to_ts(df, completions[-1])
+
         points           = ab["points"]
         alligator_point  = ab["alligator_point"]
         stochastic_point = ab["stochastic_point"]
@@ -73,7 +129,7 @@ class BuySignalWorker:
 
         # ── Entry data from the last HA candle ────────────────────────────────
         last        = df.iloc[-1]
-        entry_price = float(last["ha_close"])
+        entry_price = float(last.get("ha_close", last["close"]))
         stop_loss   = round(entry_price * 0.98, 6)  # 2 % below entry
 
         jaw_price   = float(last["jaw"])   if not np.isnan(last["jaw"])   else 0.0
@@ -90,7 +146,7 @@ class BuySignalWorker:
         if is_valid:
             notification_message = (
                 f"BUY SIGNAL — {self.asset} {self.timeframe}\n"
-                f"Points: 3/3 confirmed\n"
+                f"Points: 3/3 confirmed (within last {window} bars)\n"
                 f"Alligator: lips finished above teeth and jaw (long)\n"
                 f"Stochastic: K or D entered above 80\n"
                 f"Vortex: VI+ crossed above VI-\n"
@@ -121,4 +177,21 @@ class BuySignalWorker:
             jaw_price           = jaw_price,
             teeth_price         = teeth_price,
             lips_price          = lips_price,
+            last_signal_time    = last_signal_str,
+            strategy_mode       = timeframe_to_mode(self.timeframe),
+            # Phase 5: partial indicator fields set here; scanner appends ML/AI suffix
+            indicator_flags     = "+".join(
+                f for f, hit in [
+                    ("alligator",  alligator_point),
+                    ("stochastic", stochastic_point),
+                    ("vortex",     vortex_point),
+                ] if hit
+            ) or None,
+            entry_reason_code   = "+".join(
+                a for a, hit in [
+                    ("al", alligator_point),
+                    ("st", stochastic_point),
+                    ("vo", vortex_point),
+                ] if hit
+            ) or None,
         )

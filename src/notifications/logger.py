@@ -29,7 +29,7 @@ LOG_DIR.mkdir(parents=True, exist_ok=True)
 
 # ── Log format ────────────────────────────────────────────────────────────────
 _FMT = "%(asctime)s | %(levelname)-8s | %(name)s | %(message)s"
-_DATE_FMT = "%Y-%m-%d %H:%M:%S"
+_DATE_FMT = "%Y-%m-%d %I:%M:%S %p"
 
 
 def _make_file_handler(path: Path, level: int = logging.DEBUG) -> logging.FileHandler:
@@ -42,7 +42,13 @@ def _make_file_handler(path: Path, level: int = logging.DEBUG) -> logging.FileHa
 def setup_logging() -> None:
     """Call once at startup to wire up all log handlers."""
     root = logging.getLogger()
-    root.setLevel(logging.DEBUG)
+    root.setLevel(logging.INFO)
+
+    # Silence noisy third-party libraries
+    logging.getLogger("ccxt").setLevel(logging.WARNING)
+    logging.getLogger("urllib3").setLevel(logging.WARNING)
+    logging.getLogger("requests").setLevel(logging.WARNING)
+    logging.getLogger("websockets").setLevel(logging.WARNING)
 
     # Console — INFO and above
     ch = logging.StreamHandler()
@@ -78,8 +84,8 @@ def log_signal(
     ml_confidence:    Optional[float],
     rejection_reason: str = "",
 ) -> None:
-    ts = datetime.now(_tz).strftime("%Y-%m-%d %H:%M:%S %Z")
-    status = "VALID" if is_valid else f"REJECTED ({rejection_reason})"
+    ts = datetime.now(_tz).strftime("%Y-%m-%d %I:%M:%S %p %Z")
+    status = "VALID" if is_valid else f"REJECTED | Rejection reason: {rejection_reason}"
     _sig_log.info(
         "[%s] %s SIGNAL | %s %s | Points: %d/3 | Entry: %.5f | SL: %.5f | "
         "ML: %s | Status: %s",
@@ -100,13 +106,14 @@ def log_trade_open(
     trail_stop:   float,
     position_size:float,
     risk_pct:     float,
+    strategy_mode:str = "UNKNOWN",
 ) -> None:
-    ts = datetime.now(_tz).strftime("%Y-%m-%d %H:%M:%S %Z")
+    ts = datetime.now(_tz).strftime("%Y-%m-%d %I:%M:%S %p %Z")
     _trade_log.info(
-        "[%s] OPEN  | ID: %s | %s %s %s | Entry: %.5f | Hard SL: %.5f | "
+        "[%s] OPEN  | ID: %s | %s %s %s | Mode: %s | Entry: %.5f | Hard SL: %.5f | "
         "Trail: %.5f | Size: %.4f | Risk: %.2f%%",
         ts, trade_id, signal_type, asset, timeframe,
-        entry_price, stop_hard, trail_stop, position_size, risk_pct,
+        strategy_mode, entry_price, stop_hard, trail_stop, position_size, risk_pct,
     )
 
 
@@ -122,16 +129,17 @@ def log_trade_close(
     pnl:          float,
     pnl_pct:      float,
     max_trail:    float,
+    strategy_mode:str = "UNKNOWN",
 ) -> None:
-    entry_ts = entry_time.astimezone(_tz).strftime("%Y-%m-%d %H:%M:%S %Z")
-    exit_ts  = exit_time.astimezone(_tz).strftime("%Y-%m-%d %H:%M:%S %Z")
+    entry_ts = entry_time.astimezone(_tz).strftime("%Y-%m-%d %I:%M:%S %p %Z")
+    exit_ts  = exit_time.astimezone(_tz).strftime("%Y-%m-%d %I:%M:%S %p %Z")
     duration = str(exit_time - entry_time).split(".")[0]
 
     _trade_log.info(
-        "CLOSE | ID: %s | %s %s | Entry: %s | Exit: %s | Duration: %s | "
+        "CLOSE | ID: %s | %s %s | Mode: %s | Entry: %s | Exit: %s | Duration: %s | "
         "Entry: %.5f | Exit: %.5f | Reason: %s | PnL: %+.2f (%+.2f%%) | "
         "MaxTrail: %.5f",
-        trade_id, signal_type, asset,
+        trade_id, signal_type, asset, strategy_mode,
         entry_ts, exit_ts, duration,
         entry_price, exit_price, close_reason,
         pnl, pnl_pct, max_trail,
@@ -144,9 +152,9 @@ def log_rejection(
     timeframe:   str,
     reason:      str,
 ) -> None:
-    ts = datetime.now(_tz).strftime("%Y-%m-%d %H:%M:%S %Z")
+    ts = datetime.now(_tz).strftime("%Y-%m-%d %I:%M:%S %p %Z")
     _sig_log.warning(
-        "[%s] REJECTED | %s %s %s | Reason: %s",
+        "[%s] REJECTED | %s %s %s | Rejection reason: %s",
         ts, signal_type, asset, timeframe, reason,
     )
 
@@ -162,9 +170,51 @@ def log_trail_update(
         asset, trade_id, old_stop, new_stop,
     )
 
+def log_trail_update_full(
+    trade_id:    str,
+    asset:       str,
+    old_stop:    float,
+    new_stop:    float,
+    reason:      str,
+    current_price: float,
+) -> None:
+    """Detailed trail-move log used by the lifecycle hooks (Phase 3)."""
+    _trade_log.info(
+        "[TRAIL] %s (%s) trail %.5f\u2192%.5f (%s) | price=%.5f",
+        asset, trade_id, old_stop, new_stop, reason, current_price,
+    )
+
+
+def log_break_even_armed(
+    trade_id:       str,
+    asset:          str,
+    entry_price:    float,
+    current_price:  float,
+    unrealized_pct: float,
+) -> None:
+    """Log the moment break-even protection is armed for a trade."""
+    _trade_log.info(
+        "[BE ARMED] %s (%s) break-even locked at %.5f | price=%.5f | unrealized=%+.2f%%",
+        asset, trade_id, entry_price, current_price, unrealized_pct,
+    )
+
+
+def log_profit_lock_stage(
+    trade_id:       str,
+    asset:          str,
+    stage:          int,
+    lock_pct:       float,
+    current_price:  float,
+    unrealized_pct: float,
+) -> None:
+    """Log progression through a profit-lock stage (Phase 3)."""
+    _trade_log.info(
+        "[LOCK STAGE %d] %s (%s) profit \u2265%.2f%% locked | price=%.5f | unrealized=%+.2f%%",
+        stage, asset, trade_id, lock_pct, current_price, unrealized_pct,
+    )
 
 def log_kill_switch(loss_pct: float) -> None:
-    ts = datetime.now(_tz).strftime("%Y-%m-%d %H:%M:%S %Z")
+    ts = datetime.now(_tz).strftime("%Y-%m-%d %I:%M:%S %p %Z")
     _sys_log.critical(
         "[%s] DAILY KILL SWITCH TRIGGERED — loss %.2f%% hit 10%% limit",
         ts, loss_pct,

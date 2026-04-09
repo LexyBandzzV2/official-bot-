@@ -48,6 +48,7 @@ class OrderManager:
         expected_entry: float,
         stop_loss:      float,
         trade_id:       str,
+        take_profit:    float = None,
         comment:        str = "AlgoBot",
     ) -> Optional[dict]:
         """Submit a market order and record the fill.
@@ -58,13 +59,29 @@ class OrderManager:
             log.warning("OrderManager.place_order: no adapter set (dry-run mode)")
             return None
 
-        result = self._adapter.market_order(
-            symbol    = symbol,
-            direction = signal_type,
-            volume    = volume,
-            sl_price  = stop_loss,
-            comment   = comment,
-        )
+        # Pass take_profit if the adapter supports it
+        if hasattr(self._adapter, 'market_order'):
+            import inspect
+            params = inspect.signature(self._adapter.market_order).parameters
+            if 'tp_price' in params:
+                result = self._adapter.market_order(
+                    symbol    = symbol,
+                    direction = signal_type,
+                    volume    = volume,
+                    sl_price  = stop_loss,
+                    tp_price  = take_profit,
+                    comment   = comment,
+                )
+            else:
+                result = self._adapter.market_order(
+                    symbol    = symbol,
+                    direction = signal_type,
+                    volume    = volume,
+                    sl_price  = stop_loss,
+                    comment   = comment,
+                )
+        else:
+            result = None
         if result is None:
             return None
 

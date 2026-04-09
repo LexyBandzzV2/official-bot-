@@ -109,9 +109,9 @@ def rank_signal(sig: object) -> float:
             log.debug("Kimi K2 scored %s %s → %.0f%%", sig.signal_type, sig.asset, score * 100)  # type: ignore
             return score
 
-    log.info("No AI client available — returning neutral score 0.5 for %s %s",
+    log.info("No AI client available — returning neutral score 0.4 for %s %s",
              sig.signal_type, sig.asset)  # type: ignore
-    return 0.5
+    return 0.4
 
 
 def run_debrief(trade_summary: str) -> Optional[str]:

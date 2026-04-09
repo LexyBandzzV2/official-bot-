@@ -32,7 +32,7 @@ class KrakenAdapter:
     def disconnect(self):
         self.exchange = None
 
-    def place_order(self, signal_type, symbol, volume, expected_entry, stop_loss, trade_id):
+    def place_order(self, signal_type, symbol, volume, expected_entry, stop_loss, trade_id, take_profit=None):
         if not self.exchange:
             raise RuntimeError("KrakenAdapter not connected")
         side = 'buy' if signal_type.upper() == 'BUY' else 'sell'

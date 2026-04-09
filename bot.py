@@ -83,19 +83,20 @@ def cli():
 @click.option("--historical", is_flag=True,          help="Scan historical candles (not live)")
 @click.option("--days",       "-d",  default=30,    show_default=True, help="Days of history to scan")
 @click.option("--top",              default=10,     show_default=True, help="Max candidates to deep-scan")
-def cmd_scan(ticker, scan_all, category, timeframe, historical, days, top):
+@click.option("--ohlc",       is_flag=True,          help="Use standard OHLC candles instead of Heikin Ashi")
+def cmd_scan(ticker, scan_all, category, timeframe, historical, days, top, ohlc):
     """Scan markets for BUY/SELL signals."""
     _imports()
+    import pandas as pd
     from src.data.heikin_ashi      import convert_to_heikin_ashi
     from src.data.market_data      import get_historical_ohlcv, get_latest_candles
     from src.data.symbol_mapper    import get_all_symbols, get_symbols_by_class, best_source
     from src.signals.signal_engine import SignalEngine
     from src.display.tables        import print_buy_signal, print_sell_signal
-    from src.data.db               import init_db, save_signal
+    from src.data.db               import init_db, save_signal, get_recent_signals
     from src.scanner.candidate_ranker import score_symbol, rank_candidates
 
     init_db()
-
 
     # Build symbol list
     if ticker:
@@ -103,7 +104,6 @@ def cmd_scan(ticker, scan_all, category, timeframe, historical, days, top):
     elif category:
         symbols = get_symbols_by_class(category)
     elif scan_all:
-        # Merge all catalogue symbols with all Kraken tradable pairs
         from src.data.kraken_assets import get_kraken_pairs
         kraken_pairs = get_kraken_pairs()
         symbols = list(set(get_all_symbols()) | set(kraken_pairs))
@@ -111,11 +111,28 @@ def cmd_scan(ticker, scan_all, category, timeframe, historical, days, top):
         console.print("[red]Specify --ticker, --all, or --category[/]")
         raise SystemExit(1)
 
-    console.print(Panel(
-        f"[bold cyan]Scanning {len(symbols)} symbol(s)[/]  TF: [yellow]{timeframe}[/]  "
-        f"Mode: [green]{'HISTORICAL' if historical else 'LIVE'}[/]",
-        title="AlgoBot Scan",
-    ))
+    # ── ASCII Art Banner ──────────────────────────────────────────────────────
+    BANNER = (
+        "[bold cyan]"
+        " ██████  ██     ██ ██          ███████ ████████  █████  ██      ██   ██ \n"
+        "██    ██ ██     ██ ██          ██         ██    ██   ██ ██      ██  ██  \n"
+        "██    ██ ██  █  ██ ██          ███████    ██    ███████ ██      █████   \n"
+        "██    ██ ██ ███ ██ ██               ██    ██    ██   ██ ██      ██  ██  \n"
+        " ██████   ███ ███  ███████     ███████    ██    ██   ██ ███████ ██   ██ "
+        "[/bold cyan]"
+    )
+    console.print(BANNER)
+    console.print()
+
+    mode_lbl  = "[green]HISTORICAL[/green]" if historical else "[bold green]LIVE[/bold green]"
+    ohlc_lbl  = "  [dim](OHLC mode)[/dim]" if ohlc else ""
+    console.print(
+        f"[bold white]  AlgoBot Scan[/bold white]  ·  "
+        f"Symbols: [bold yellow]{len(symbols)}[/bold yellow]  ·  "
+        f"TF: [bold yellow]{timeframe}[/bold yellow]  ·  "
+        f"Mode: {mode_lbl}{ohlc_lbl}"
+    )
+    console.rule(style="cyan")
 
     import pytz
     from src.config import TIMEZONE
@@ -130,46 +147,96 @@ def cmd_scan(ticker, scan_all, category, timeframe, historical, days, top):
                 raw   = get_latest_candles(sym, timeframe, count=200, source=best_source(sym))
 
             if raw.empty:
-                console.print(f"[dim]  {sym}: no data[/]")
+                console.print(f"[dim]{sym:<12}[/dim]  [dim]no data[/dim]")
                 continue
 
-            ha_df  = convert_to_heikin_ashi(raw)
-            engine = SignalEngine(sym, timeframe)
-            result = engine.evaluate_ha(ha_df)
+            if ohlc:
+                target_df = raw
+            else:
+                target_df = convert_to_heikin_ashi(raw)
+                # Overwrite base columns with HA values so indicators calculate using smoothed data
+                target_df["open"]  = target_df["ha_open"]
+                target_df["high"]  = target_df["ha_high"]
+                target_df["low"]   = target_df["ha_low"]
+                target_df["close"] = target_df["ha_close"]
 
-            buy  = result.get("buy")
-            sell = result.get("sell")
+            engine    = SignalEngine(sym, timeframe)
+            result    = engine.evaluate_ha(target_df)
+
+            buy      = result.get("buy")
+            sell     = result.get("sell")
             conflict = result.get("conflict", False)
 
+            # Use actual last candle time from market data, not current clock
+            if "time" in target_df.columns and not target_df.empty:
+                last_candle_ts = pd.Timestamp(target_df["time"].iloc[-1])
+                if last_candle_ts.tzinfo is None:
+                    last_candle_ts = last_candle_ts.tz_localize("UTC")
+                last_candle_ts = last_candle_ts.tz_convert(tz)
+            else:
+                last_candle_ts = datetime.now(tz)
+
             if conflict:
-                console.print(f"[yellow]  {sym}: CONFLICT — both signals fired simultaneously, both suppressed[/]")
+                console.print(
+                    f"[bold yellow]{sym:<12}[/bold yellow]  "
+                    f"[yellow]⚡ CONFLICT — both BUY & SELL fired, both suppressed[/yellow]"
+                )
                 continue
 
             if buy and buy.is_valid:
-                buy.timestamp = datetime.now(tz)
+                buy.timestamp = last_candle_ts
                 print_buy_signal(buy)
                 save_signal(buy)
+
             elif sell and sell.is_valid:
-                sell.timestamp = datetime.now(tz)
+                sell.timestamp = last_candle_ts
                 print_sell_signal(sell)
                 save_signal(sell)
+
             else:
                 pts_b = buy.points  if buy  else 0
                 pts_s = sell.points if sell else 0
-                hb = buy.signals_in_history  if buy  else 0
-                hs = sell.signals_in_history if sell else 0
+                hb    = buy.signals_in_history  if buy  else 0
+                hs    = sell.signals_in_history if sell else 0
+
+                # Last signal timestamp from the analysed data window
+                buy_time  = buy.last_signal_time  if buy  and buy.last_signal_time  else None
+                sell_time = sell.last_signal_time if sell and sell.last_signal_time else None
+
+                if buy_time and sell_time:
+                    last_sig = (f"[green]BUY[/green]  @ [yellow]{buy_time}[/yellow]"
+                                if buy_time > sell_time
+                                else f"[red]SELL[/red] @ [yellow]{sell_time}[/yellow]")
+                elif buy_time:
+                    last_sig = f"[green]BUY[/green]  @ [yellow]{buy_time}[/yellow]"
+                elif sell_time:
+                    last_sig = f"[red]SELL[/red] @ [yellow]{sell_time}[/yellow]"
+                else:
+                    last_sig = "[dim]No signal history yet[/dim]"
+
                 hist_lbl = f"{days}d hist" if historical else "series"
+
+                # pts colour
+                buy_col  = "green"  if pts_b == 3 else ("yellow" if pts_b >= 2 else "dim")
+                sell_col = "red"    if pts_s == 3 else ("yellow" if pts_s >= 2 else "dim")
+
                 console.print(
-                    f"[dim]  {sym}: No live bar signal  "
-                    f"(pts buy={pts_b}/3 sell={pts_s}/3)  "
-                    f"[{hist_lbl}: {hb} buy / {hs} sell completions][/]"
+                    f"[bold cyan]{sym:<12}[/bold cyan]  "
+                    f"No signal  "
+                    f"pts [bold {buy_col}]B:{pts_b}/3[/bold {buy_col}] "
+                    f"[bold {sell_col}]S:{pts_s}/3[/bold {sell_col}]  "
+                    f"[{hist_lbl}: [green]{hb} buy[/green] / [red]{hs} sell[/red]]  "
+                    f"Last Signal: {last_sig}"
                 )
 
         except KeyboardInterrupt:
             console.print("\n[yellow]Scan interrupted.[/]")
             break
         except Exception as e:
-            console.print(f"[red]  {sym}: error — {e}[/]")
+            console.print(f"  [red]{sym:<12}  error — {e}[/red]")
+
+    console.rule(style="cyan")
+    console.print(f"[dim]  Scan complete — {datetime.now(tz).strftime('%Y-%m-%d  %I:%M:%S %p %Z')}[/dim]\n")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -462,9 +529,12 @@ def cmd_status(risk):
               type=click.Choice(["forex","crypto","stocks","commodities","indices"], case_sensitive=False))
 @click.option("--dry-run",    is_flag=True, default=True,  help="Signals only, no orders (default)")
 @click.option("--live",       is_flag=True, default=False, help="LIVE mode — sends real orders")
+@click.option("--broker",     default="auto", show_default=True,
+              type=click.Choice(["auto", "alpaca", "kraken", "fxcm", "ibkr", "fp"], case_sensitive=False),
+              help="Force execution through one broker. Use alpaca for Alpaca paper/live accounts.")
 @click.option("--top",               default=10,    show_default=True)
 @click.option("--balance",    "-b",  default=None,  type=float, help="Override account balance")
-def cmd_start(timeframe, ticker, category, dry_run, live, top, balance):
+def cmd_start(timeframe, ticker, category, dry_run, live, broker, top, balance):
     """Start the continuous market scanner.
 
     Default is DRY RUN (signals only).  Use --live for real order submission.
@@ -473,16 +543,18 @@ def cmd_start(timeframe, ticker, category, dry_run, live, top, balance):
     _imports()
     from src.data.db            import init_db
     from src.scanner.market_scanner import MarketScanner
-    from src.data.symbol_mapper import get_all_symbols, get_symbols_by_class
+    from src.data.symbol_mapper import get_symbols_by_class
+    from src.scanner.asset_universe import get_enabled_symbols, get_entry
     from src.config             import ACCOUNT_BALANCE
 
     init_db()
 
     actual_dry_run = not live  # live flag overrides dry-run default
+    selected_broker = None if str(broker).lower() == "auto" else str(broker).lower()
     if live:
         console.print(Panel(
-            "[bold red]⚠  LIVE TRADING MODE — Real orders will be submitted to FP Markets.[/]\n"
-            "Press Ctrl+C at any time to stop cleanly.",
+            "[bold red]⚠  ORDER ROUTING ENABLED — The scanner will submit orders per TRADING_MODE and BrokerRouter[/]\n"
+            "(Alpaca paper/live, IBKR, Kraken, or MT5). Press Ctrl+C to stop cleanly.",
             border_style="red",
         ))
     else:
@@ -491,9 +563,48 @@ def cmd_start(timeframe, ticker, category, dry_run, live, top, balance):
     if ticker:
         symbols = [ticker.upper()]
     elif category:
-        symbols = get_symbols_by_class(category)
+        # Prefer enabled universe symbols for category scans so we don't
+        # silently fall back to the legacy 31-symbol catalogue.
+        universe_symbols = get_enabled_symbols()
+        if category == "stocks":
+            symbols = []
+            for s in universe_symbols:
+                entry = get_entry(s)
+                if entry and entry.asset_class in ("stock", "etf"):
+                    symbols.append(s)
+        elif category == "commodities":
+            symbols = []
+            for s in universe_symbols:
+                entry = get_entry(s)
+                if entry and entry.asset_class == "commodity":
+                    symbols.append(s)
+        elif category == "indices":
+            symbols = []
+            for s in universe_symbols:
+                entry = get_entry(s)
+                if entry and entry.asset_class == "index":
+                    symbols.append(s)
+        elif category == "crypto":
+            symbols = []
+            for s in universe_symbols:
+                entry = get_entry(s)
+                if entry and entry.asset_class == "crypto":
+                    symbols.append(s)
+        elif category == "forex":
+            symbols = []
+            for s in universe_symbols:
+                entry = get_entry(s)
+                if entry and entry.asset_class == "forex":
+                    symbols.append(s)
+        else:
+            symbols = get_symbols_by_class(category)
+
+        # If a requested category doesn't exist in the enabled universe,
+        # preserve backwards compatibility with legacy catalogue behavior.
+        if not symbols:
+            symbols = get_symbols_by_class(category)
     else:
-        symbols = get_all_symbols()
+        symbols = get_enabled_symbols()
 
     scanner = MarketScanner(
         symbols          = symbols,
@@ -501,14 +612,8 @@ def cmd_start(timeframe, ticker, category, dry_run, live, top, balance):
         top_candidates   = top,
         dry_run          = actual_dry_run,
         account_balance  = balance or ACCOUNT_BALANCE,
+        execution_broker = selected_broker,
     )
-
-    if live:
-        from src.execution.broker_router import BrokerRouter
-        router = BrokerRouter(dry_run=False)
-        if not router.connect():
-            console.print("[red]Could not connect to FP Markets MT5. Aborting.[/]")
-            raise SystemExit(1)
 
     scanner.start()
 
@@ -619,7 +724,7 @@ def ml_group():
 
 
 @ml_group.command("train")
-@click.option("--force", is_flag=True, help="Train even with fewer than 30 samples")
+@click.option("--force", is_flag=True, help="Train even if minimum data guards are not met")
 def ml_train(force):
     """Train (or retrain) the false-signal filter model."""
     _imports()
@@ -630,19 +735,27 @@ def ml_train(force):
     console.print("[dim]Backfilling feature rows from closed trades...[/]")
     backfill_features_from_trades()
 
-    console.print("[dim]Training XGBoost model...[/]")
+    console.print("[dim]Training local ML models (XGBoost + LightGBM)...[/]")
     result = run_training(force=force)
     if result["trained"]:
+        metrics = result.get("metrics") or {}
+        xgb_auc = ((metrics.get("xgboost") or {}).get("auc"))
+        lgb_auc = ((metrics.get("lightgbm") or {}).get("auc"))
+        chosen = metrics.get("chosen")
         console.print(Panel(
             f"[green]Model trained successfully![/]\n\n"
             f"Samples:   {result['n_samples']}\n"
-            f"Train set: {result.get('train_size','?')}\n"
-            f"Val set:   {result.get('val_size','?')}\n"
-            f"Accuracy:  {result['accuracy']*100:.1f}%" if result.get("accuracy") else
-            f"Samples:   {result['n_samples']}",
+            f"Wins:      {result.get('wins','?')}  Losses: {result.get('losses','?')}\n"
+            f"XGB AUC:   {xgb_auc:.3f}" if xgb_auc is not None else f"XGB AUC:   N/A",
             title="ML Training",
             border_style="green",
         ))
+        if lgb_auc is not None or chosen:
+            console.print(Panel(
+                f"LightGBM AUC: {lgb_auc:.3f}" if lgb_auc is not None else "LightGBM AUC: N/A",
+                title=f"Chosen model: {chosen or 'xgboost'}",
+                border_style="cyan",
+            ))
     else:
         console.print(Panel(
             f"[yellow]{result['message']}[/]",
@@ -687,9 +800,11 @@ def ml_status():
               type=click.Choice(["forex","crypto","stocks","commodities","indices"], case_sensitive=False),
               help="Scan all symbols in a category")
 @click.option("--days",       "-d",  default=30,    show_default=True, help="Days of history to scan")
-def cmd_scan_multitime(ticker, scan_all, category, days):
+@click.option("--ohlc",       is_flag=True,          help="Use standard OHLC candles instead of Heikin Ashi")
+def cmd_scan_multitime(ticker, scan_all, category, days, ohlc):
     """Scan 3m, 5m, 10m, 15m, 30m, 45m, 1h, 2h, 3h, 4h for signals for the last N days."""
     _imports()
+    import pandas as pd
     from src.data.heikin_ashi      import convert_to_heikin_ashi
     from src.data.market_data      import get_historical_ohlcv, get_latest_candles
     from src.data.symbol_mapper    import get_all_symbols, get_symbols_by_class, best_source
@@ -727,23 +842,45 @@ def cmd_scan_multitime(ticker, scan_all, category, days):
                 start = datetime.now(timezone.utc) - timedelta(days=days)
                 raw   = get_historical_ohlcv(sym, tf, start=start, source=best_source(sym))
                 if raw.empty:
-                    console.print(f"[dim]  {sym}: no data[/]")
+                    console.print(f"[dim]{sym:<12}[/dim]  [dim]no data[/dim]")
                     continue
-                ha_df  = convert_to_heikin_ashi(raw)
+                if ohlc:
+                    target_df = raw
+                else:
+                    target_df = convert_to_heikin_ashi(raw)
+                    # Overwrite base columns with HA values so indicators calculate using smoothed data
+                    target_df["open"]  = target_df["ha_open"]
+                    target_df["high"]  = target_df["ha_high"]
+                    target_df["low"]   = target_df["ha_low"]
+                    target_df["close"] = target_df["ha_close"]
+
                 engine = SignalEngine(sym, tf)
-                result = engine.evaluate_ha(ha_df)
+                result = engine.evaluate_ha(target_df)
                 buy  = result.get("buy")
                 sell = result.get("sell")
                 conflict = result.get("conflict", False)
+
+                # Use actual last candle time from market data, not current clock
+                if "time" in target_df.columns and not target_df.empty:
+                    last_candle_ts = pd.Timestamp(target_df["time"].iloc[-1])
+                    if last_candle_ts.tzinfo is None:
+                        last_candle_ts = last_candle_ts.tz_localize("UTC")
+                    last_candle_ts = last_candle_ts.tz_convert(tz)
+                else:
+                    last_candle_ts = datetime.now(tz)
+
                 if conflict:
-                    console.print(f"[yellow]  {sym}: CONFLICT — both signals fired simultaneously, both suppressed[/]")
+                    console.print(
+                        f"[bold yellow]{sym:<12}[/bold yellow]  "
+                        f"[yellow]⚡ CONFLICT — both BUY & SELL fired, both suppressed[/yellow]"
+                    )
                     continue
                 if buy and buy.is_valid:
-                    buy.timestamp = datetime.now(tz)
+                    buy.timestamp = last_candle_ts
                     print_buy_signal(buy)
                     save_signal(buy)
                 elif sell and sell.is_valid:
-                    sell.timestamp = datetime.now(tz)
+                    sell.timestamp = last_candle_ts
                     print_sell_signal(sell)
                     save_signal(sell)
                 else:
@@ -751,10 +888,34 @@ def cmd_scan_multitime(ticker, scan_all, category, days):
                     pts_s = sell.points if sell else 0
                     hb = buy.signals_in_history  if buy  else 0
                     hs = sell.signals_in_history if sell else 0
+                    
+                    # Format the last signal time from the evaluated results
+                    last_time_str = "None"
+                    buy_time = buy.last_signal_time if buy and buy.last_signal_time else None
+                    sell_time = sell.last_signal_time if sell and sell.last_signal_time else None
+                    
+                    # pts colour
+                    buy_col  = "green"  if pts_b == 3 else ("yellow" if pts_b >= 2 else "dim")
+                    sell_col = "red"    if pts_s == 3 else ("yellow" if pts_s >= 2 else "dim")
+
+                    if buy_time and sell_time:
+                        last_sig = (f"[green]BUY[/green]  @ [yellow]{buy_time}[/yellow]"
+                                    if buy_time > sell_time
+                                    else f"[red]SELL[/red] @ [yellow]{sell_time}[/yellow]")
+                    elif buy_time:
+                        last_sig = f"[green]BUY[/green]  @ [yellow]{buy_time}[/yellow]"
+                    elif sell_time:
+                        last_sig = f"[red]SELL[/red] @ [yellow]{sell_time}[/yellow]"
+                    else:
+                        last_sig = "[dim]No signal history yet[/dim]"
+
                     console.print(
-                        f"[dim]  {sym}: No live bar signal  "
-                        f"(pts buy={pts_b}/3 sell={pts_s}/3)  "
-                        f"[{days}d hist: {hb} buy / {hs} sell completions][/]"
+                        f"[bold cyan]{sym:<12}[/bold cyan]  "
+                        f"No signal  "
+                        f"pts [bold {buy_col}]B:{pts_b}/3[/bold {buy_col}] "
+                        f"[bold {sell_col}]S:{pts_s}/3[/bold {sell_col}]  "
+                        f"[{days}d hist: [green]{hb} buy[/green] / [red]{hs} sell[/red]]  "
+                        f"Last Signal: {last_sig}"
                     )
 
             except KeyboardInterrupt:

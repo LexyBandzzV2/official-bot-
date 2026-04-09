@@ -24,6 +24,7 @@ from src.indicators.stochastic import calculate_stochastic
 from src.indicators.vortex     import calculate_vortex
 from src.signals.confluence    import analyze_sell
 from src.signals.types import SellSignalResult
+from src.signals.strategy_mode import timeframe_to_mode
 
 
 class SellSignalWorker:
@@ -61,7 +62,60 @@ class SellSignalWorker:
 
         # ── 3-point confluence (rolling window) ───────────────────────────────
         sl = analyze_sell(df)
-        is_valid         = sl["valid_last"]
+        completions = sl["completions"]
+        window = 10  # match POINT_COMPLETION_WINDOW
+        # Signal valid if all 3 points met within last 10 candles
+        is_valid = sl["valid_last"]
+        
+        # Resolve proper datetime for last signal
+        # If valid: find the most recent event bar in window; else use last historical completion
+        last_signal_str = None
+
+        def _bar_to_ts(df, idx):
+            import pandas as pd
+            if "timestamp" in df.columns:
+                ts = df["timestamp"].iloc[idx]
+            elif hasattr(df.index, "dtype") and str(df.index.dtype).startswith("datetime"):
+                ts = df.index[idx]
+            elif "time" in df.columns:
+                ts = df["time"].iloc[idx]
+            else:
+                ts = df.index[idx]
+            try:
+                if isinstance(ts, (int, float)):
+                    return None
+                 
+                from src.config import TIMEZONE
+                import pytz
+                 
+                dt = pd.Timestamp(ts)
+                if dt.tz is None:
+                    dt = dt.tz_localize('UTC')
+                dt = dt.tz_convert(TIMEZONE)
+                return dt.strftime("%Y-%m-%d  %I:%M %p")
+            except Exception:
+                return str(ts)
+
+        if is_valid:
+            n = len(df)
+            start_idx = max(0, n - window)
+            from src.indicators.alligator  import alligator_sell_event
+            from src.indicators.stochastic import stochastic_sell_event
+            from src.indicators.vortex     import vortex_sell_event
+            last_event_idx = None
+            for i in range(n - 1, start_idx - 1, -1):
+                if i == 0:
+                    continue
+                prev, curr = df.iloc[i - 1], df.iloc[i]
+                if alligator_sell_event(prev, curr) or stochastic_sell_event(prev, curr) or vortex_sell_event(prev, curr):
+                    last_event_idx = i
+                    break
+            if last_event_idx is not None:
+                last_signal_str = _bar_to_ts(df, last_event_idx)
+        elif completions:
+            last_signal_str = _bar_to_ts(df, completions[-1])
+
+
         points           = sl["points"]
         alligator_point  = sl["alligator_point"]
         stochastic_point = sl["stochastic_point"]
@@ -69,7 +123,7 @@ class SellSignalWorker:
 
         # ── Entry data from the last HA candle ────────────────────────────────
         last        = df.iloc[-1]
-        entry_price = float(last["ha_close"])
+        entry_price = float(last.get("ha_close", last["close"]))
         stop_loss   = round(entry_price * 1.02, 6)  # 2 % ABOVE entry (short)
 
         jaw_price   = float(last["jaw"])   if not np.isnan(last["jaw"])   else 0.0
@@ -117,4 +171,21 @@ class SellSignalWorker:
             jaw_price           = jaw_price,
             teeth_price         = teeth_price,
             lips_price          = lips_price,
+            last_signal_time    = last_signal_str,
+            strategy_mode       = timeframe_to_mode(self.timeframe),
+            # Phase 5: partial indicator fields set here; scanner appends ML/AI suffix
+            indicator_flags     = "+".join(
+                f for f, hit in [
+                    ("alligator",  alligator_point),
+                    ("stochastic", stochastic_point),
+                    ("vortex",     vortex_point),
+                ] if hit
+            ) or None,
+            entry_reason_code   = "+".join(
+                a for a, hit in [
+                    ("al", alligator_point),
+                    ("st", stochastic_point),
+                    ("vo", vortex_point),
+                ] if hit
+            ) or None,
         )

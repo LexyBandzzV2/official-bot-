@@ -176,11 +176,20 @@ class RiskManager:
         ha_df=None,
         peak_giveback: Optional[object] = None,
     ) -> Tuple[bool, str]:
-        """Check whether an open trade should be closed.
+        """Check whether an open trade should be closed on this bar's close.
 
-        Order: HARD_STOP → TRAILING_TP (peak giveback) → TRAIL_STOP → ALLIGATOR_TP.
+        Exit priority order (checked top to bottom; first match wins):
+          1. HARD_STOP          — price hit the fixed 2 % safety stop
+          2. PEAK_GIVEBACK_EXIT — price retraced giveback_frac of max favorable
+                                  move from entry (evaluated on bar close).
+                                  NOTE: this can fire at a loss when the
+                                  favorable excursion was small.  That is
+                                  expected behaviour — see PeakGiveback docs.
+          3. TRAIL_STOP         — teeth-based trailing stop was breached
+          4. ALLIGATOR_TP       — lips crossed back through teeth (momentum end)
 
-        ``peak_giveback`` is optional :class:`PeakGiveback` (must be updated each bar).
+        ``peak_giveback`` is optional :class:`PeakGiveback` (must be updated
+        each bar via ``update_bar`` before calling this method).
         """
         rec = self.open_positions.get(trade_id)
         if rec is None:
@@ -194,9 +203,10 @@ class RiskManager:
         if rec.signal_type == "SELL" and current_price >= rec.stop_loss_hard:
             return True, "HARD_STOP"
 
-        # 2. Peak giveback (trailing take-profit style)
+        # 2. Peak giveback — bar-close retraced giveback_frac of max favorable move.
+        #    Can close at a loss when MFE is small (see PeakGiveback class docs).
         if peak_giveback is not None and peak_giveback.is_triggered(current_price):
-            return True, "TRAILING_TP"
+            return True, "PEAK_GIVEBACK_EXIT"
 
         # 3. Teeth trailing stop
         if trail and trail.is_triggered(current_price):

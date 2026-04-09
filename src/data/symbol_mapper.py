@@ -26,7 +26,7 @@ ASSET_CATALOGUE: Dict[str, dict] = {
     # Crypto
     "BTCUSDT": {"class": "crypto",     "ccxt": "BTC/USDT",          "yf": "BTC-USD",    "display": "BTC/USDT"},
     # Bitstamp spot (closer to TradingView BTC/USD on Bitstamp than Binance USDT)
-    "BTCUSD":  {"class": "crypto",     "ccxt": "BTC/USD",           "yf": "BTC-USD",    "display": "BTC/USD"},
+    "BTCUSD":  {"class": "crypto",     "ccxt": "BTC/USD",            "yf": "BTC-USD",    "display": "BTC/USD"},
     "ETHUSDT": {"class": "crypto",     "ccxt": "ETH/USDT",          "yf": "ETH-USD",    "display": "ETH/USDT"},
     "SOLUSDT": {"class": "crypto",     "ccxt": "SOL/USDT",          "yf": "SOL-USD",    "display": "SOL/USDT"},
     "BNBUSDT": {"class": "crypto",     "ccxt": "BNB/USDT",          "yf": "BNB-USD",    "display": "BNB/USDT"},
@@ -34,6 +34,16 @@ ASSET_CATALOGUE: Dict[str, dict] = {
     "ADAUSDT": {"class": "crypto",     "ccxt": "ADA/USDT",          "yf": "ADA-USD",    "display": "ADA/USDT"},
     "DOGEUSDT":{"class": "crypto",     "ccxt": "DOGE/USDT",         "yf": "DOGE-USD",   "display": "DOGE/USDT"},
     "AVAXUSDT":{"class": "crypto",     "ccxt": "AVAX/USDT",         "yf": "AVAX-USD",   "display": "AVAX/USDT"},
+    # Core 20 crypto additions (slash-form symbols normalize to canonical keys below)
+    "ETHUSD":  {"class": "crypto",     "ccxt": "ETH/USDT",          "yf": "ETH-USD",    "display": "ETH/USD"},
+    "SOLUSD":  {"class": "crypto",     "ccxt": "SOL/USDT",          "yf": "SOL-USD",    "display": "SOL/USD"},
+    "AVAXUSD": {"class": "crypto",     "ccxt": "AVAX/USDT",         "yf": "AVAX-USD",   "display": "AVAX/USD"},
+    "LINKUSD": {"class": "crypto",     "ccxt": "LINK/USDT",         "yf": "LINK-USD",   "display": "LINK/USD"},
+    "DOGEUSD": {"class": "crypto",     "ccxt": "DOGE/USDT",         "yf": "DOGE-USD",   "display": "DOGE/USD"},
+    "BNBUSD":  {"class": "crypto",     "ccxt": "BNB/USDT",          "yf": "BNB-USD",    "display": "BNB/USD"},
+    "INJUSD":  {"class": "crypto",     "ccxt": "INJ/USDT",          "yf": "INJ-USD",    "display": "INJ/USD"},
+    "ARBUSD":  {"class": "crypto",     "ccxt": "ARB/USDT",          "yf": "ARB-USD",    "display": "ARB/USD"},
+    "APTUSD":  {"class": "crypto",     "ccxt": "APT/USDT",          "yf": "APT-USD",    "display": "APT/USD"},
 
     # Commodities
     "XAUUSD":  {"class": "commodity",  "finnhub": "OANDA:XAU_USD",  "yf": "GC=F",       "display": "Gold"},
@@ -56,6 +66,18 @@ ASSET_CATALOGUE: Dict[str, dict] = {
     "TSLA":    {"class": "stock",      "finnhub": "TSLA",           "yf": "TSLA",       "display": "Tesla"},
     "NVDA":    {"class": "stock",      "finnhub": "NVDA",           "yf": "NVDA",       "display": "NVIDIA"},
     "MSFT":    {"class": "stock",      "finnhub": "MSFT",           "yf": "MSFT",       "display": "Microsoft"},
+    "AMD":     {"class": "stock",      "finnhub": "AMD",            "yf": "AMD",        "display": "AMD"},
+    "META":    {"class": "stock",      "finnhub": "META",           "yf": "META",       "display": "Meta"},
+    "AMZN":    {"class": "stock",      "finnhub": "AMZN",           "yf": "AMZN",       "display": "Amazon"},
+    "NFLX":    {"class": "stock",      "finnhub": "NFLX",           "yf": "NFLX",       "display": "Netflix"},
+    "SMCI":    {"class": "stock",      "finnhub": "SMCI",           "yf": "SMCI",       "display": "Super Micro Computer"},
+    "QQQ":     {"class": "stock",      "finnhub": "QQQ",            "yf": "QQQ",        "display": "Invesco QQQ Trust"},
+    "SPY":     {"class": "stock",      "finnhub": "SPY",            "yf": "SPY",        "display": "SPDR S&P 500 ETF"},
+    "TQQQ":    {"class": "stock",      "finnhub": "TQQQ",           "yf": "TQQQ",       "display": "ProShares UltraPro QQQ"},
+    "SOXL":    {"class": "stock",      "finnhub": "SOXL",           "yf": "SOXL",       "display": "Direxion Daily Semiconductor Bull 3X"},
+    "TECL":    {"class": "stock",      "finnhub": "TECL",           "yf": "TECL",       "display": "Direxion Daily Technology Bull 3X"},
+    "HIBL":    {"class": "stock",      "finnhub": "HIBL",           "yf": "HIBL",       "display": "Direxion Daily S&P 500 High Beta Bull 3X"},
+    "LABU":    {"class": "stock",      "finnhub": "LABU",           "yf": "LABU",       "display": "Direxion Daily S&P Biotech Bull 3X"},
 }
 
 # ── Timeframe mapping ─────────────────────────────────────────────────────────
@@ -131,10 +153,43 @@ def to_finnhub(symbol: str) -> Optional[str]:
     return ASSET_CATALOGUE.get(canonical_symbol(symbol), {}).get("finnhub")
 
 
+def to_ibkr(symbol: str) -> Optional[str]:
+    """Translate canonical symbol to IBKR format.
+    
+    IBKR uses canonical symbols directly for most assets.
+    Returns the canonical symbol for IBKR-supported assets.
+    """
+    canon = canonical_symbol(symbol)
+    asset_class = get_asset_class(canon)
+    
+    # IBKR supports stocks, forex, crypto, commodities
+    if asset_class in ("stock", "forex", "crypto", "commodity"):
+        return canon
+    
+    # Indices not directly tradeable via IBKR (use futures instead)
+    return None
+
+
+def ibkr_supported(symbol: str) -> bool:
+    """Check if a symbol is supported by IBKR.
+    
+    Returns True if the symbol can be traded via IBKR.
+    """
+    canon = canonical_symbol(symbol)
+    asset_class = get_asset_class(canon)
+    
+    # IBKR supports stocks, forex, crypto (limited), commodities
+    # Does not support indices directly (use futures instead)
+    return asset_class in ("stock", "forex", "crypto", "commodity")
+
+
 def best_source(symbol: str) -> str:
     """Return the preferred data source for a symbol.
 
     crypto → ccxt  |  forex/commodities/indices → finnhub  |  stocks → yfinance
+    
+    Note: To use IBKR as a data source, explicitly pass source="ibkr" to
+    get_historical_ohlcv() or get_latest_candles().
     """
     asset_class = get_asset_class(symbol)
     if asset_class == "crypto":

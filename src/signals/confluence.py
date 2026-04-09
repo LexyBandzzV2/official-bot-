@@ -18,7 +18,7 @@ from src.indicators.stochastic import stochastic_buy_event, stochastic_sell_even
 from src.indicators.vortex     import vortex_buy_event, vortex_sell_event
 
 # Bars allowed after the first point (inclusive range [first_idx, first_idx + window])
-POINT_COMPLETION_WINDOW = 10
+POINT_COMPLETION_WINDOW = 9
 
 
 def _bits_at(
@@ -98,74 +98,85 @@ def _simulate(
     return completions, got
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+#  THE KEY FIX: rolling window check on the LAST N candles
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _check_recent_window(
+    ev_a: np.ndarray,
+    ev_s: np.ndarray,
+    ev_v: np.ndarray,
+    window: int,
+) -> Tuple[bool, int, bool, bool, bool]:
+    """
+    Look backward from the very last bar by `window` candles.
+    Check if ALL 3 indicators fired at least once in that slice.
+    """
+    n = len(ev_a)
+    start = max(0, n - window)
+
+    a_fired = bool(ev_a[start:].any())
+    s_fired = bool(ev_s[start:].any())
+    v_fired = bool(ev_v[start:].any())
+
+    points = sum([a_fired, s_fired, v_fired])
+    valid  = (points == 3)
+
+    return valid, points, a_fired, s_fired, v_fired
+
+
 def analyze_buy(df: pd.DataFrame, window: int = POINT_COMPLETION_WINDOW) -> Dict:
-    """Single pass: completions, validity on last bar, point flags for UI."""
     n = len(df)
     if n < 2:
-        return {
-            "completions": [],
-            "count": 0,
-            "valid_last": False,
-            "points": 0,
-            "alligator_point": False,
-            "stochastic_point": False,
-            "vortex_point": False,
-        }
+        return _empty_result()
 
     ev_a, ev_s, ev_v = _build_buy_events(df)
-    completions, got_end = _simulate(ev_a, ev_s, ev_v, window)
-    last_i = n - 1
-    valid_last = bool(completions) and completions[-1] == last_i
+    completions, _ = _simulate(ev_a, ev_s, ev_v, window)
 
-    if valid_last:
-        pts = 3
-        a_pt, s_pt, v_pt = True, True, True
-    else:
-        pts = len(got_end)
-        a_pt, s_pt, v_pt = ("A" in got_end, "S" in got_end, "V" in got_end)
+    valid, points, a_pt, s_pt, v_pt = _check_recent_window(
+        ev_a, ev_s, ev_v, window
+    )
 
     return {
-        "completions": completions,
-        "count": len(completions),
-        "valid_last": valid_last,
-        "points": pts,
-        "alligator_point": a_pt,
-        "stochastic_point": s_pt,
-        "vortex_point": v_pt,
+        "completions":       completions,
+        "count":             len(completions),
+        "valid_last":        valid,
+        "points":            points,
+        "alligator_point":   a_pt,
+        "stochastic_point":  s_pt,
+        "vortex_point":      v_pt,
     }
 
 
 def analyze_sell(df: pd.DataFrame, window: int = POINT_COMPLETION_WINDOW) -> Dict:
     n = len(df)
     if n < 2:
-        return {
-            "completions": [],
-            "count": 0,
-            "valid_last": False,
-            "points": 0,
-            "alligator_point": False,
-            "stochastic_point": False,
-            "vortex_point": False,
-        }
+        return _empty_result()
 
     ev_a, ev_s, ev_v = _build_sell_events(df)
-    completions, got_end = _simulate(ev_a, ev_s, ev_v, window)
-    last_i = n - 1
-    valid_last = bool(completions) and completions[-1] == last_i
+    completions, _ = _simulate(ev_a, ev_s, ev_v, window)
 
-    if valid_last:
-        pts = 3
-        a_pt, s_pt, v_pt = True, True, True
-    else:
-        pts = len(got_end)
-        a_pt, s_pt, v_pt = ("A" in got_end, "S" in got_end, "V" in got_end)
+    valid, points, a_pt, s_pt, v_pt = _check_recent_window(
+        ev_a, ev_s, ev_v, window
+    )
 
     return {
-        "completions": completions,
-        "count": len(completions),
-        "valid_last": valid_last,
-        "points": pts,
-        "alligator_point": a_pt,
-        "stochastic_point": s_pt,
-        "vortex_point": v_pt,
+        "completions":       completions,
+        "count":             len(completions),
+        "valid_last":        valid,
+        "points":            points,
+        "alligator_point":   a_pt,
+        "stochastic_point":  s_pt,
+        "vortex_point":      v_pt,
+    }
+
+def _empty_result() -> Dict:
+    return {
+        "completions":       [],
+        "count":             0,
+        "valid_last":        False,
+        "points":            0,
+        "alligator_point":   False,
+        "stochastic_point":  False,
+        "vortex_point":      False,
     }

@@ -1,74 +1,161 @@
 """Feature extraction for ML model training and inference.
 
-Each closed trade is converted to a numeric feature vector for XGBoost.
-Features capture signal quality, market structure, and entry context.
+This module defines the *canonical* ML feature contract for the bot.
+
+Key invariant:
+  - The exact feature order in ``FEATURE_NAMES`` is used everywhere:
+      signal -> DB (ml_features.features_json) -> training -> inference
+
+We intentionally keep this contract stable and versioned.
 """
 
 from __future__ import annotations
 
 import json
 import logging
-from typing import Any
+from datetime import datetime
+from typing import Any, Optional
 
 import numpy as np
 
 log = logging.getLogger(__name__)
 
+FEATURE_VERSION = 2
+
 # ── Feature names (must stay in this exact order for model compatibility) ──────
+# Uses Heikin Ashi values to avoid mixing candle types.
 FEATURE_NAMES = [
-    # Signal breadth
-    "points",                # 0–3: how many indicators confirmed
-    "alligator_point",       # 0 or 1
-    "stochastic_point",      # 0 or 1
-    "vortex_point",          # 0 or 1
-    # "staircase_confirmed" removed
+    # Core candle features (HA)
+    "ha_open",
+    "ha_high",
+    "ha_low",
+    "ha_close",
+    "volume",
 
-    # Alligator spread at entry (normalised by entry price)
-    "jaw_teeth_spread_pct",   # (jaw - teeth) / entry * 100
-    "teeth_lips_spread_pct",  # (teeth - lips) / entry * 100
-    "jaw_lips_spread_pct",    # (jaw - lips) / entry * 100
+    # Candle metrics
+    "candle_range",
+    "candle_body",
 
-    # Price context
-    "entry_vs_teeth_pct",     # (entry - teeth) / entry * 100
-    "entry_vs_jaw_pct",       # (entry - jaw) / entry * 100
+    # Volatility (std of returns)
+    "volatility_10",
+    "volatility_20",
 
-    # AI score
-    "ai_confidence",          # 0.0–1.0 (or 0.5 if unavailable)
+    # ATR (HA-based)
+    "atr_14",
 
-    # Signal type
-    "is_buy",                 # 1 = BUY, 0 = SELL
+    # Indicators at signal bar
+    "vi_plus",
+    "vi_minus",
+    "stoch_k",
+    "stoch_d",
+    "jaw",
+    "teeth",
+    "lips",
+
+    # Time features (UTC)
+    "hour_of_day",
+    "day_of_week",
+
+    # Signal context
+    "points",              # 0-3
+    "alligator_point",     # 0/1
+    "stochastic_point",    # 0/1
+    "vortex_point",        # 0/1
+    "ai_confidence",       # 0..1 (0.5 default)
+    "is_buy",              # 1 BUY, 0 SELL
 ]
 
 N_FEATURES = len(FEATURE_NAMES)
 
 
-def extract_from_signal(sig: Any) -> np.ndarray:
-    """Build feature vector from a BuySignalResult or SellSignalResult.
+def _safe_float(x: Any, default: float = 0.0) -> float:
+    try:
+        if x is None:
+            return float(default)
+        v = float(x)
+        if np.isnan(v) or np.isinf(v):
+            return float(default)
+        return v
+    except Exception:
+        return float(default)
 
-    Returns float32 array of shape (N_FEATURES,).
+
+def extract_from_signal_and_frame(sig: Any, frame_df) -> np.ndarray:
+    """Build feature vector from a signal and the latest enriched candle frame.
+
+    ``frame_df`` must include (at least) the last row with:
+      ha_open/ha_high/ha_low/ha_close/volume, jaw/teeth/lips, vi_plus/vi_minus, stoch_k/stoch_d, and time.
     """
-    ep = sig.entry_price if sig.entry_price else 1.0
-    is_buy = 1.0 if sig.signal_type == "BUY" else 0.0
+    if frame_df is None or getattr(frame_df, "empty", True):
+        # Fallback: produce a safe zero vector with signal context only.
+        is_buy = 1.0 if getattr(sig, "signal_type", "") == "BUY" else 0.0
+        vec = np.zeros(N_FEATURES, dtype=np.float32)
+        vec[FEATURE_NAMES.index("points")] = _safe_float(getattr(sig, "points", 0.0))
+        vec[FEATURE_NAMES.index("alligator_point")] = _safe_float(getattr(sig, "alligator_point", 0.0))
+        vec[FEATURE_NAMES.index("stochastic_point")] = _safe_float(getattr(sig, "stochastic_point", 0.0))
+        vec[FEATURE_NAMES.index("vortex_point")] = _safe_float(getattr(sig, "vortex_point", 0.0))
+        vec[FEATURE_NAMES.index("ai_confidence")] = _safe_float(getattr(sig, "ai_confidence", None), 0.5)
+        vec[FEATURE_NAMES.index("is_buy")] = _safe_float(is_buy)
+        return vec
 
-    jaw    = sig.jaw_price or ep
-    teeth  = sig.teeth_price or ep
-    lips   = sig.lips_price or ep
+    last = frame_df.iloc[-1]
+    ha_open = _safe_float(last.get("ha_open"))
+    ha_high = _safe_float(last.get("ha_high"))
+    ha_low = _safe_float(last.get("ha_low"))
+    ha_close = _safe_float(last.get("ha_close"))
+    volume = _safe_float(last.get("volume"))
 
-    vec = [
-        float(sig.points),
-        float(sig.alligator_point),
-        float(sig.stochastic_point),
-        float(sig.vortex_point),
-        # staircase_confirmed removed
-        (jaw - teeth) / ep * 100,
-        (teeth - lips) / ep * 100,
-        (jaw - lips)   / ep * 100,
-        (ep - teeth)   / ep * 100,
-        (ep - jaw)     / ep * 100,
-        float(sig.ai_confidence) if sig.ai_confidence is not None else 0.5,
-        is_buy,
-    ]
-    return np.array(vec, dtype=np.float32)
+    candle_range = _safe_float(ha_high - ha_low)
+    candle_body = _safe_float(abs(ha_close - ha_open))
+
+    # volatility features expect to already exist if caller computed them
+    vol10 = _safe_float(last.get("volatility_10"))
+    vol20 = _safe_float(last.get("volatility_20"))
+    atr14 = _safe_float(last.get("atr_14"))
+
+    vi_plus = _safe_float(last.get("vi_plus"))
+    vi_minus = _safe_float(last.get("vi_minus"))
+    stoch_k = _safe_float(last.get("stoch_k"))
+    stoch_d = _safe_float(last.get("stoch_d"))
+    jaw = _safe_float(last.get("jaw"))
+    teeth = _safe_float(last.get("teeth"))
+    lips = _safe_float(last.get("lips"))
+
+    # time features (UTC)
+    hour_of_day = 0.0
+    day_of_week = 0.0
+    t = last.get("time")
+    try:
+        if t is not None:
+            ts = t.to_pydatetime() if hasattr(t, "to_pydatetime") else t
+            if isinstance(ts, datetime):
+                hour_of_day = float(ts.hour)
+                day_of_week = float(ts.weekday())
+    except Exception:
+        pass
+
+    is_buy = 1.0 if getattr(sig, "signal_type", "") == "BUY" else 0.0
+    vec = np.array(
+        [
+            ha_open, ha_high, ha_low, ha_close, volume,
+            candle_range, candle_body,
+            vol10, vol20,
+            atr14,
+            vi_plus, vi_minus, stoch_k, stoch_d,
+            jaw, teeth, lips,
+            hour_of_day, day_of_week,
+            _safe_float(getattr(sig, "points", 0.0)),
+            _safe_float(getattr(sig, "alligator_point", 0.0)),
+            _safe_float(getattr(sig, "stochastic_point", 0.0)),
+            _safe_float(getattr(sig, "vortex_point", 0.0)),
+            _safe_float(getattr(sig, "ai_confidence", None), 0.5),
+            is_buy,
+        ],
+        dtype=np.float32,
+    )
+    # final correctness guard
+    vec = np.nan_to_num(vec, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32)
+    return vec
 
 
 def extract_from_trade_dict(row: dict) -> np.ndarray:
@@ -76,7 +163,21 @@ def extract_from_trade_dict(row: dict) -> np.ndarray:
 
     The row must have a 'features_json' column containing the serialised vector.
     """
-    return np.array(json.loads(row["features_json"]), dtype=np.float32)
+    raw = json.loads(row["features_json"])
+    # Accept both list-vector (new) and {"0": v0, ...} (legacy)
+    if isinstance(raw, list):
+        vec = np.array(raw, dtype=np.float32)
+    elif isinstance(raw, dict):
+        try:
+            items = sorted(((int(k), float(v)) for k, v in raw.items()), key=lambda x: x[0])
+            vec = np.array([v for _, v in items], dtype=np.float32)
+        except Exception:
+            vec = np.array([], dtype=np.float32)
+    else:
+        vec = np.array([], dtype=np.float32)
+
+    vec = np.nan_to_num(vec, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32)
+    return vec
 
 
 def feature_vector_to_json(vec: np.ndarray) -> str:

@@ -1,16 +1,41 @@
-"""Peak giveback — trailing take-profit style exit without a fixed price target.
+"""Peak Giveback exit — emits close reason PEAK_GIVEBACK_EXIT.
 
-Tracks the best favorable extreme since entry (long: highest high; short: lowest low).
-If price retraces by ``giveback_frac`` of the max favorable move from entry, exit.
+Semantics
+---------
+This is NOT a fixed take-profit.  It is a favorable-excursion guard:
 
-Example (long): entry 100, peak 110, giveback 0.35 → exit if close <= 110 - 0.35×10 = 106.5.
+  1. After entry the tracker records the extreme favorable price (highest     high for longs, lowest low for shorts) seen across all bar updates.
+  2. Once a meaningful favorable move exists (peak beyond entry), if the
+     bar-close price retraces ``giveback_frac`` of that max favorable move
+     back toward entry, the exit fires.
+  3. Exits are ONLY evaluated on bar close (not intra-bar).  A candle whose
+     high posted a tiny new peak may still close below entry, resulting in a
+     losing exit — this is expected and intentional behaviour.
+
+Example (long):
+    entry 100, peak 101, giveback_frac 0.35
+    trigger_level = 101 - 0.35 × (101 - 100) = 100.65
+    bar closes at 100.60 → PEAK_GIVEBACK_EXIT fires at a loss
+
+Why losses are allowed
+-----------------------
+No break-even floor is enforced by this class.  Preventing negative
+PEAK_GIVEBACK_EXIT closes requires either:
+  • a minimum MFE activation threshold before giveback can fire, or
+  • a break-even lock that moves trigger_level to entry once MFE ≥ N%.
+Both are Phase 3 improvements; this class deliberately stays simple.
 """
 
 from __future__ import annotations
 
 
 class PeakGiveback:
-    """Updates peak from bar high/low; ``is_triggered(close)`` for exit on giveback."""
+    """Tracks bar-high/low peak; ``is_triggered(close)`` fires PEAK_GIVEBACK_EXIT.
+
+    The emitted close reason is the string ``"PEAK_GIVEBACK_EXIT"`` — callers
+    (RiskManager.check_exit_conditions) own that string; this class only
+    reports whether the condition is met.
+    """
 
     def __init__(
         self,

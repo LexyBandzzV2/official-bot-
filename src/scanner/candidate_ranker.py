@@ -35,7 +35,8 @@ class CandidateScore:
     atr_pct:        float   = 0.0    # ATR / price * 100
     alligator_spread: float = 0.0    # (jaw - lips) / price * 100 (spread of lines)
     alligator_aligned:bool  = False  # lines are in proper order (not tangled)
-    volume_score:   float   = 0.0    # relative volume   (0–1, 0 if no volume)
+    volume_ratio:   float   = 0.0    # raw relative volume (last_vol / avg_vol)
+    volume_score:   float   = 0.0    # normalized relative volume (0–1 for ranking)
     total_score:    float   = field(init=False, default=0.0)
 
     def __post_init__(self) -> None:
@@ -85,18 +86,21 @@ def score_symbol(
             aligned = (lips > teeth > jaw) or (jaw > teeth > lips)
 
         # Volume score (normalised over last 20 bars)
+        vol_ratio = 0.0
         vol_score = 0.0
         if "volume" in ha_df.columns:
             last_vol = float(ha_df["volume"].iloc[-1])
             avg_vol  = float(ha_df["volume"].tail(20).mean())
             if avg_vol > 0:
-                vol_score = min(1.0, last_vol / avg_vol)
+                vol_ratio = last_vol / avg_vol
+                vol_score = min(1.0, vol_ratio)
 
         return CandidateScore(
             symbol            = symbol,
             atr_pct           = atr_pct,
             alligator_spread  = spread,
             alligator_aligned = aligned,
+            volume_ratio      = vol_ratio,
             volume_score      = vol_score,
         )
 

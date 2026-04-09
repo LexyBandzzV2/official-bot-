@@ -16,7 +16,9 @@ Usage:
 from __future__ import annotations
 
 
+import asyncio
 import logging
+import threading
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -43,7 +45,19 @@ except ImportError:
     _COINBASE_WS_AVAILABLE = False
     CoinbaseWebSocketClient = None
 
+# Import IBKR Market Data Client
+try:
+    from src.data.ibkr.client import IBKRMarketDataClient
+    _IBKR_AVAILABLE = True
+except ImportError:
+    _IBKR_AVAILABLE = False
+    IBKRMarketDataClient = None
+
 log = logging.getLogger(__name__)
+
+# Global IBKR client instance (initialized on first use)
+_ibkr_client: Optional[IBKRMarketDataClient] = None
+_ibkr_init_lock = threading.Lock()
 
 try:
     import ccxt
@@ -85,7 +99,52 @@ def _resolve_symbol(symbol: str, source: str) -> str:
         return to_finnhub(symbol) or symbol
     if source == "yfinance":
         return to_yfinance(symbol) or symbol
+    if source == "ibkr":
+        # IBKR uses canonical symbols directly
+        return symbol
     return symbol
+
+
+def _get_ibkr_client() -> Optional[IBKRMarketDataClient]:
+    """Get or initialize the global IBKR client instance.
+    
+    Returns None if IBKR is not available or connection fails.
+    """
+    global _ibkr_client
+    
+    if not _IBKR_AVAILABLE:
+        return None
+    
+    with _ibkr_init_lock:
+        if _ibkr_client is None:
+            try:
+                log.info("Initializing IBKR Market Data Client...")
+                _ibkr_client = IBKRMarketDataClient()
+                
+                # Connect asynchronously
+                loop = None
+                try:
+                    loop = asyncio.get_running_loop()
+                except RuntimeError:
+                    # No event loop running, create one
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    connected = loop.run_until_complete(_ibkr_client.connect())
+                    if not connected:
+                        log.error("Failed to connect to IBKR")
+                        _ibkr_client = None
+                        return None
+                else:
+                    # Event loop already running, schedule connection
+                    asyncio.create_task(_ibkr_client.connect())
+                
+                log.info("IBKR Market Data Client initialized successfully")
+            except Exception as e:
+                log.error(f"Failed to initialize IBKR client: {e}")
+                _ibkr_client = None
+                return None
+        
+        return _ibkr_client
 
 # Timeframe string mapping
 TIMEFRAME_CCXT: dict[str, str] = {
@@ -222,9 +281,13 @@ def _fetch_yfinance(
         raise RuntimeError("yfinance not installed")
     interval = TIMEFRAME_YFINANCE.get(timeframe, "1h")
     ticker   = yf.Ticker(symbol)
+    # For intraday intervals, start and end may fall on the same calendar day;
+    # yfinance returns empty when start_date == end_date, so advance end by 1 day.
+    intraday_intervals = {"1m", "2m", "5m", "15m", "30m", "60m", "90m", "1h"}
+    end_dt = end + timedelta(days=1) if interval in intraday_intervals else end
     df       = ticker.history(
         start=start.strftime("%Y-%m-%d"),
-        end=end.strftime("%Y-%m-%d"),
+        end=end_dt.strftime("%Y-%m-%d"),
         interval=interval,
         auto_adjust=True,
     )
@@ -253,7 +316,7 @@ def get_historical_ohlcv(
         timeframe: timeframe string          e.g. "1h", "4h", "1d"
         start:     inclusive start datetime
         end:       exclusive end datetime    (defaults to now)
-        source:    force a specific source   "ccxt" | "finnhub" | "yfinance"
+        source:    force a specific source   "ccxt" | "finnhub" | "yfinance" | "ibkr"
 
     Returns:
         DataFrame with columns: time, open, high, low, close, volume
@@ -279,6 +342,38 @@ def get_historical_ohlcv(
         else:
             source = "yfinance"
 
+    # Try IBKR if explicitly requested
+    if source == "ibkr":
+        try:
+            client = _get_ibkr_client()
+            if client:
+                resolved = _resolve_symbol(symbol, "ibkr")
+                
+                # Run async fetch in event loop
+                loop = None
+                try:
+                    loop = asyncio.get_running_loop()
+                except RuntimeError:
+                    # No event loop running, create one
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    df = loop.run_until_complete(
+                        client.get_historical_ohlcv(resolved, timeframe, start_utc, end_utc)
+                    )
+                else:
+                    # Event loop already running, use it
+                    df = asyncio.create_task(
+                        client.get_historical_ohlcv(resolved, timeframe, start_utc, end_utc)
+                    )
+                    # Wait for result (blocking)
+                    df = asyncio.run(df)
+                
+                if not df.empty:
+                    return df
+            else:
+                errors.append("ibkr: client not available")
+        except Exception as e:
+            errors.append(f"ibkr: {e}")
 
     if source == "ccxt":
         try:
@@ -351,7 +446,22 @@ def get_latest_candles(
     """Fetch the most recent N candles for a symbol.
 
     Uses Kraken WebSocket for crypto (if available) for 5m, 15m, 30m, 1h, 4h, else falls back to get_historical_ohlcv.
+    Supports IBKR as a data source when source="ibkr" is specified.
     """
+    # Try IBKR if explicitly requested
+    if source == "ibkr":
+        try:
+            client = _get_ibkr_client()
+            if client:
+                resolved = _resolve_symbol(symbol, "ibkr")
+                df = client.get_latest_candles(resolved, timeframe, count)
+                if not df.empty:
+                    return df
+            else:
+                log.warning(f"IBKR client not available for {symbol}")
+        except Exception as e:
+            log.warning(f"IBKR fetch failed for {symbol}: {e}")
+    
     tf_mins: dict[str, int] = {
         "1m": 1, "3m": 3, "5m": 5, "15m": 15, "30m": 30,
         "1h": 60, "2h": 120, "4h": 240, "1d": 1440, "1w": 10080,
@@ -360,35 +470,10 @@ def get_latest_candles(
     look_back_min = mins_per_bar * count * 2
     start = datetime.now(timezone.utc) - timedelta(minutes=look_back_min)
 
-    # Use Coinbase WebSocket for BTC/USD and ETH/USD ticker (reliable price reference)
+    # Determine if crypto symbol
     is_crypto = "/" in symbol and any(c in symbol.upper() for c in ["BTC", "ETH", "XRP", "SOL", "ADA", "BNB", "USDT"])
-    coinbase_products = {"BTC/USD": "BTC-USD", "ETH/USD": "ETH-USD"}
-    if _COINBASE_WS_AVAILABLE and is_crypto and symbol in coinbase_products:
-        try:
-            client = CoinbaseWebSocketClient()
-            import asyncio
-            async def fetch_cb():
-                await client.connect()
-                await client.subscribe_ticker([coinbase_products[symbol]])
-                await asyncio.wait_for(client.listen(), timeout=5)
-            try:
-                asyncio.run(fetch_cb())
-            except Exception:
-                pass
-            df = client.get_ticker_df(coinbase_products[symbol])
-            if not df.empty:
-                # Convert ticker to OHLCV-like DataFrame
-                df = df.rename(columns={"price": "close"})
-                df["open"] = df["close"]
-                df["high"] = df["close"]
-                df["low"] = df["close"]
-                df["volume"] = df["volume_24h"] if "volume_24h" in df else 0.0
-                df = df[["time", "open", "high", "low", "close", "volume"]]
-                return df.tail(count).reset_index(drop=True)
-        except Exception as e:
-            log.warning(f"Coinbase WS failed: {e}")
 
-    # Fallback to Kraken WebSocket for crypto and supported timeframes
+    # Use Kraken WebSocket for crypto and supported timeframes
     supported_kraken_tfs = {"5m": 5, "15m": 15, "30m": 30, "1h": 60, "4h": 240}
     if (
         _KRAKEN_WS_AVAILABLE and is_crypto and timeframe in supported_kraken_tfs
@@ -415,3 +500,34 @@ def get_latest_candles(
     if df.empty:
         return df
     return df.tail(count).reset_index(drop=True)
+
+
+def shutdown_ibkr_client():
+    """Gracefully shutdown the IBKR client.
+    
+    Should be called on application shutdown to properly disconnect
+    and persist cache.
+    """
+    global _ibkr_client
+    
+    if _ibkr_client is not None:
+        try:
+            log.info("Shutting down IBKR Market Data Client...")
+            
+            # Run async disconnect
+            loop = None
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                # No event loop running, create one
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                loop.run_until_complete(_ibkr_client.disconnect())
+            else:
+                # Event loop already running
+                asyncio.create_task(_ibkr_client.disconnect())
+            
+            _ibkr_client = None
+            log.info("IBKR Market Data Client shutdown complete")
+        except Exception as e:
+            log.error(f"Error shutting down IBKR client: {e}")

@@ -101,3 +101,5 @@ def analyse_trade(trade: dict) -> Optional[dict]:
             note = stripped[5:].strip()
 
     return {"label": label, "note": note}
+
+
