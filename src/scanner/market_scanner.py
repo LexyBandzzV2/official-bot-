@@ -681,7 +681,22 @@ class MarketScanner:
         import numpy as np
         from src.signals.types import TradeRecord
         entry  = sig.entry_price
-        sl     = sig.stop_loss
+
+        # ATR-aware dynamic hard stop — prevents being stopped out by normal
+        # candle noise on volatile assets (SOXL/MSTR/MARA regularly have 4-6% ATR).
+        # Uses 1× ATR as the stop distance, floored at the config 2% minimum and
+        # capped at 8% so extreme ATR spikes don't produce comically wide stops.
+        _atr_pct = float(getattr(sig, "prefilter_atr_pct", 0.0) or 0.0) / 100.0
+        if _atr_pct > 0.0:
+            _dynamic_stop_pct = max(STOP_LOSS_PCT, min(_atr_pct, 0.08))
+        else:
+            _dynamic_stop_pct = STOP_LOSS_PCT
+
+        if sig.signal_type == "BUY":
+            sl = round(entry * (1.0 - _dynamic_stop_pct), 6)
+        else:
+            sl = round(entry * (1.0 + _dynamic_stop_pct), 6)
+
         size   = calculate_position_size(
             self.risk_manager.account_balance, entry, sl, MAX_RISK_PER_TRADE
         )
@@ -718,12 +733,14 @@ class MarketScanner:
         # Select mode-specific exit policy (Phase 3)
         policy = get_exit_policy(sig.timeframe)
 
-        # Initialize trailing stop (tracks red line - teeth)
+        # Initialize trailing stop (tracks red line - teeth).
+        # Uses the same dynamic stop pct computed above so the hard floor
+        # matches the entry stop distance (ATR-aware, not a flat 2%).
         trail = TrailingStop(
             direction    = "buy" if sig.signal_type == "BUY" else "sell",
             entry_price  = entry,
             initial_teeth= teeth_now,
-            stop_loss_pct= STOP_LOSS_PCT,
+            stop_loss_pct= _dynamic_stop_pct,
         )
         
         # Initialize Alligator trailing take profit (tracks green line - lips)
@@ -1053,46 +1070,49 @@ class MarketScanner:
                     exit_policy_name=rec.exit_policy_name,
                 )
 
-            # Profit lock stage progression
-            _next_stage = rec.profit_lock_stage + 1
-            if _next_stage <= 3:
-                _stages = _policy.profit_lock_stages
+            # Profit lock stage progression — loop so multiple stages can fire
+            # on the same bar (e.g. price rockets from 0% to 6% in one candle).
+            _stages = _policy.profit_lock_stages
+            while True:
+                _next_stage = rec.profit_lock_stage + 1
+                if _next_stage > len(_stages):
+                    break   # all stages already reached
                 _threshold_pct, _lock_pct = _stages[_next_stage - 1]
-                if unrealized_pct >= _threshold_pct:
-                    _old_trail = trail.current_stop
-                    if rec.signal_type == "BUY":
-                        _lock_level = max(trail.current_stop,
-                                         rec.entry_price * (1.0 + _lock_pct / 100.0))
-                    else:
-                        _lock_level = min(trail.current_stop,
-                                         rec.entry_price * (1.0 - _lock_pct / 100.0))
-                    trail.current_stop = _lock_level
-                    rec.trailing_stop  = _lock_level
-                    rec.profit_lock_stage = _next_stage
-                    rec.was_protected_profit = True
-                    _reason = f"profit_lock_stage_{_next_stage}"
-                    rec.trail_update_reason = _reason
-                    # Phase 4: update richer state names
-                    _stage_state = f"STAGE_{_next_stage}_LOCKED"
-                    rec.trail_active_mode = f"stage_{_next_stage}"
-                    rec.exit_policy_name  = policy_state_name(_policy.name, _stage_state)
-                    log_trail_update_full(tid, rec.asset, _old_trail, _lock_level, _reason, close_price)
-                    log_profit_lock_stage(tid, rec.asset, _next_stage, _lock_pct, close_price, unrealized_pct)
-                    save_lifecycle_event(
-                        tid, "profit_lock_stage",
-                        trail_update_reason=_reason,
-                        old_value=_old_trail, new_value=_lock_level,
-                        current_price=close_price,
-                        profit_lock_stage=_next_stage,
-                    )
-                    update_trade_lifecycle(
-                        tid,
-                        profit_lock_stage=_next_stage,
-                        was_protected_profit=1,
-                        trailing_stop=_lock_level,
-                        trail_active_mode=rec.trail_active_mode,
-                        exit_policy_name=rec.exit_policy_name,
-                    )
+                if unrealized_pct < _threshold_pct:
+                    break   # not yet at the next stage threshold
+                _old_trail = trail.current_stop
+                if rec.signal_type == "BUY":
+                    _lock_level = max(trail.current_stop,
+                                     rec.entry_price * (1.0 + _lock_pct / 100.0))
+                else:
+                    _lock_level = min(trail.current_stop,
+                                     rec.entry_price * (1.0 - _lock_pct / 100.0))
+                trail.current_stop = _lock_level
+                rec.trailing_stop  = _lock_level
+                rec.profit_lock_stage = _next_stage
+                rec.was_protected_profit = True
+                _reason = f"profit_lock_stage_{_next_stage}"
+                rec.trail_update_reason = _reason
+                _stage_state = f"STAGE_{_next_stage}_LOCKED"
+                rec.trail_active_mode = f"stage_{_next_stage}"
+                rec.exit_policy_name  = policy_state_name(_policy.name, _stage_state)
+                log_trail_update_full(tid, rec.asset, _old_trail, _lock_level, _reason, close_price)
+                log_profit_lock_stage(tid, rec.asset, _next_stage, _lock_pct, close_price, unrealized_pct)
+                save_lifecycle_event(
+                    tid, "profit_lock_stage",
+                    trail_update_reason=_reason,
+                    old_value=_old_trail, new_value=_lock_level,
+                    current_price=close_price,
+                    profit_lock_stage=_next_stage,
+                )
+                update_trade_lifecycle(
+                    tid,
+                    profit_lock_stage=_next_stage,
+                    was_protected_profit=1,
+                    trailing_stop=_lock_level,
+                    trail_active_mode=rec.trail_active_mode,
+                    exit_policy_name=rec.exit_policy_name,
+                )
 
             # ── Phase 4: ATR trail (SCALP only, eligible after stage-2 lock) ─
             if (
