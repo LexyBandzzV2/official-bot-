@@ -1,9 +1,21 @@
 """Unified market data client.
 
-Abstracts three data sources:
-  • CCXT (Binance public API) — crypto OHLCV
-  • Finnhub                   — forex, commodities, stocks (intraday)
-  • yfinance                  — stocks, ETFs, indices (historical fallback)
+Abstracts four data sources:
+  • Polygon.io (api.massive.com)         — stocks, crypto, forex OHLCV (broad coverage)
+  • CCXT (Binance/Bitstamp public API)   — crypto OHLCV (primary for crypto)
+  • Finnhub                              — forex, commodities, stocks (intraday)
+  • yfinance                             — fallback for all non-crypto assets
+
+  OpenBB SDK is imported opportunistically but is currently non-functional
+  (openbb 4.7.1 / openbb-core 1.6.7 version mismatch: OBBject_EquityInfo is
+  not injected into openbb_core.app.provider_interface at runtime). When
+  "openbb" is requested as source, yfinance is used instead.
+
+Source priority by asset class
+-------------------------------
+  Crypto:      ccxt  → polygon  → yfinance
+  Forex:       finnhub  → polygon  → yfinance
+  Stocks/ETFs: polygon  → yfinance
 
 All functions return a standardised DataFrame with columns:
     time   (UTC datetime, timezone-aware)
@@ -21,7 +33,7 @@ import logging
 import threading
 import time
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import Any, Optional
 
 import numpy as np
 import pandas as pd
@@ -56,7 +68,7 @@ except ImportError:
 log = logging.getLogger(__name__)
 
 # Global IBKR client instance (initialized on first use)
-_ibkr_client: Optional[IBKRMarketDataClient] = None
+_ibkr_client: Optional[Any] = None
 _ibkr_init_lock = threading.Lock()
 
 try:
@@ -74,18 +86,31 @@ except ImportError:
     log.warning("yfinance not installed — yfinance source unavailable")
 
 try:
-    from src.config import FINNHUB_API_KEY, BINANCE_API_KEY, BINANCE_SECRET
+    from openbb import obb as _obb_raw  # type: ignore[attr-defined]
+    # Trigger lazy import of the equity extension to verify it's actually usable.
+    # openbb 4.7.1 has a bug where OBBject_EquityInfo is not injected into
+    # openbb_core.app.provider_interface, causing a deferred ImportError.
+    _type_check = type(_obb_raw.equity)  # noqa: F841  # type: ignore[attr-defined]
+    _OPENBB_AVAILABLE = True
+    _obb: Any = _obb_raw
+except Exception:
+    _OPENBB_AVAILABLE = False
+    _obb: Any = None
+
+try:
+    from src.config import FINNHUB_API_KEY, BINANCE_API_KEY, BINANCE_SECRET, POLYGON_API_KEY
 except ImportError:
     FINNHUB_API_KEY  = ""
     BINANCE_API_KEY  = ""
     BINANCE_SECRET   = ""
+    POLYGON_API_KEY  = ""
 
 try:
     from src.data.symbol_mapper import to_ccxt, to_yfinance, to_finnhub
 except ImportError:
-    def to_ccxt(s):     return None
-    def to_yfinance(s): return None
-    def to_finnhub(s):  return None
+    def to_ccxt(symbol: str) -> str | None:     return None  # type: ignore[misc]
+    def to_yfinance(symbol: str) -> str | None: return None  # type: ignore[misc]
+    def to_finnhub(symbol: str) -> str | None:  return None  # type: ignore[misc]
 
 
 def _resolve_symbol(symbol: str, source: str) -> str:
@@ -97,15 +122,44 @@ def _resolve_symbol(symbol: str, source: str) -> str:
         return to_ccxt(symbol) or symbol
     if source == "finnhub":
         return to_finnhub(symbol) or symbol
-    if source == "yfinance":
+    if source in ("yfinance", "openbb"):
         return to_yfinance(symbol) or symbol
+    if source == "polygon":
+        return _to_polygon_ticker(symbol)
     if source == "ibkr":
         # IBKR uses canonical symbols directly
         return symbol
     return symbol
 
 
-def _get_ibkr_client() -> Optional[IBKRMarketDataClient]:
+def _to_polygon_ticker(symbol: str) -> str:
+    """Convert a canonical symbol to the Polygon.io ticker format.
+
+    Polygon uses:
+      Stocks  → plain uppercase ticker:  AAPL, TSLA
+      Crypto  → X:BTCUSD               (no slash, X: prefix)
+      Forex   → C:EURUSD               (no slash, C: prefix)
+    """
+    upper = symbol.upper().replace("/", "")
+    # Detect crypto by common quote/base patterns
+    crypto_keywords = {"BTC", "ETH", "XRP", "SOL", "ADA", "BNB", "USDT", "DOGE", "AVAX",
+                       "MATIC", "DOT", "LINK", "LTC", "UNI", "ATOM"}
+    is_crypto = any(k in upper for k in crypto_keywords)
+    # Forex: 6-char all-alpha pairs like EURUSD, GBPUSD
+    is_forex = (
+        not is_crypto
+        and len(upper) == 6
+        and upper.isalpha()
+        and upper[:3] in {"EUR", "GBP", "USD", "JPY", "AUD", "NZD", "CAD", "CHF"}
+    )
+    if is_crypto:
+        return f"X:{upper}"
+    if is_forex:
+        return f"C:{upper}"
+    return upper
+
+
+def _get_ibkr_client() -> Optional[Any]:
     """Get or initialize the global IBKR client instance.
     
     Returns None if IBKR is not available or connection fails.
@@ -119,7 +173,7 @@ def _get_ibkr_client() -> Optional[IBKRMarketDataClient]:
         if _ibkr_client is None:
             try:
                 log.info("Initializing IBKR Market Data Client...")
-                _ibkr_client = IBKRMarketDataClient()
+                _ibkr_client = IBKRMarketDataClient()  # type: ignore[operator]
                 
                 # Connect asynchronously
                 loop = None
@@ -129,14 +183,14 @@ def _get_ibkr_client() -> Optional[IBKRMarketDataClient]:
                     # No event loop running, create one
                     loop = asyncio.new_event_loop()
                     asyncio.set_event_loop(loop)
-                    connected = loop.run_until_complete(_ibkr_client.connect())
+                    connected = loop.run_until_complete(_ibkr_client.connect())  # type: ignore[union-attr]
                     if not connected:
                         log.error("Failed to connect to IBKR")
                         _ibkr_client = None
                         return None
                 else:
                     # Event loop already running, schedule connection
-                    asyncio.create_task(_ibkr_client.connect())
+                    asyncio.create_task(_ibkr_client.connect())  # type: ignore[union-attr]
                 
                 log.info("IBKR Market Data Client initialized successfully")
             except Exception as e:
@@ -162,6 +216,13 @@ TIMEFRAME_FINNHUB: dict[str, str] = {
 TIMEFRAME_YFINANCE: dict[str, str] = {
     "1m": "1m", "5m": "5m", "15m": "15m", "30m": "30m",
     "1h": "1h", "1d": "1d", "1w": "1wk",
+}
+
+# OpenBB uses yfinance-compatible interval strings; unsupported ones map to nearest.
+TIMEFRAME_OPENBB: dict[str, str] = {
+    "1m": "1m",  "3m": "5m",  "5m": "5m",  "15m": "15m",
+    "30m": "30m", "1h": "1h",  "2h": "1h",  "4h": "1h",
+    "1d": "1d",  "1w": "1wk",
 }
 
 # ── Internal helpers ──────────────────────────────────────────────────────────
@@ -201,14 +262,14 @@ def _get_ccxt_exchange(resolved_pair: str):
     if not _CCXT_AVAILABLE:
         raise RuntimeError("ccxt not installed")
     if resolved_pair == "BTC/USD":
-        return ccxt.bitstamp({
+        return ccxt.bitstamp({  # type: ignore[possibly-unbound]
             "enableRateLimit": True,
             "options": {"defaultType": "spot"},
         })
     # Binance — READ-ONLY public OHLCV for most crypto pairs
-    return ccxt.binance({
-        "apiKey":  BINANCE_API_KEY  or None,
-        "secret":  BINANCE_SECRET   or None,
+    return ccxt.binance({  # type: ignore[possibly-unbound]
+        "apiKey":  BINANCE_API_KEY  or "",
+        "secret":  BINANCE_SECRET   or "",
         "enableRateLimit": True,
         "options": {"defaultType": "spot"},
     })
@@ -280,7 +341,7 @@ def _fetch_yfinance(
     if not _YF_AVAILABLE:
         raise RuntimeError("yfinance not installed")
     interval = TIMEFRAME_YFINANCE.get(timeframe, "1h")
-    ticker   = yf.Ticker(symbol)
+    ticker   = yf.Ticker(symbol)  # type: ignore[possibly-unbound]
     # For intraday intervals, start and end may fall on the same calendar day;
     # yfinance returns empty when start_date == end_date, so advance end by 1 day.
     intraday_intervals = {"1m", "2m", "5m", "15m", "30m", "60m", "90m", "1h"}
@@ -300,6 +361,113 @@ def _fetch_yfinance(
     return _normalise(df)
 
 
+# ── OpenBB (equity / crypto / forex via yfinance provider) ───────────────────
+
+def _fetch_openbb(
+    symbol:    str,
+    timeframe: str,
+    start:     datetime,
+    end:       datetime,
+    is_crypto: bool = False,
+    is_forex:  bool = False,
+) -> pd.DataFrame:
+    """Fetch OHLCV via OpenBB SDK (yfinance provider).
+
+    Routes to the correct OpenBB namespace based on asset class:
+      Equities/ETFs  -> obb.equity.price.historical
+      Crypto         -> obb.crypto.price.historical
+      Forex/FX       -> obb.currency.price.historical
+    """
+    if not _OPENBB_AVAILABLE or _obb is None:
+        raise RuntimeError("openbb not installed")
+    interval   = TIMEFRAME_OPENBB.get(timeframe, "1h")
+    start_date = start.strftime("%Y-%m-%d")
+    end_date   = end.strftime("%Y-%m-%d")
+    if is_crypto:
+        result = _obb.crypto.price.historical(
+            symbol, start_date=start_date, end_date=end_date,
+            interval=interval, provider="yfinance",
+        )
+    elif is_forex:
+        result = _obb.currency.price.historical(
+            symbol, start_date=start_date, end_date=end_date,
+            interval=interval, provider="yfinance",
+        )
+    else:
+        result = _obb.equity.price.historical(
+            symbol, start_date=start_date, end_date=end_date,
+            interval=interval, provider="yfinance",
+        )
+    df = result.to_df().reset_index()
+    return _normalise(df)
+
+
+# ── Polygon.io (stocks / crypto / forex) ─────────────────────────────────────
+
+_POLYGON_BASE = "https://api.massive.com/v2"
+
+# Polygon uses (multiplier, timespan) pairs.
+# timeframe -> (multiplier, timespan)
+_POLYGON_TIMEFRAME: dict[str, tuple[int, str]] = {
+    "1m":  (1,  "minute"),
+    "3m":  (3,  "minute"),
+    "5m":  (5,  "minute"),
+    "15m": (15, "minute"),
+    "30m": (30, "minute"),
+    "1h":  (1,  "hour"),
+    "2h":  (2,  "hour"),
+    "4h":  (4,  "hour"),
+    "1d":  (1,  "day"),
+    "1w":  (1,  "week"),
+}
+
+
+def _fetch_polygon(
+    ticker:    str,
+    timeframe: str,
+    start:     datetime,
+    end:       datetime,
+) -> pd.DataFrame:
+    """Fetch OHLCV bars from Polygon.io REST API.
+
+    Handles pagination automatically via next_url.
+    Works for stocks (AAPL), crypto (X:BTCUSD), and forex (C:EURUSD).
+    """
+    if not POLYGON_API_KEY:
+        raise RuntimeError("POLYGON_API_KEY not set in .env")
+    multiplier, timespan = _POLYGON_TIMEFRAME.get(timeframe, (1, "hour"))
+    from_str = start.strftime("%Y-%m-%d")
+    to_str   = end.strftime("%Y-%m-%d")
+    url = (
+        f"{_POLYGON_BASE}/aggs/ticker/{ticker}/range/{multiplier}/{timespan}"
+        f"/{from_str}/{to_str}"
+    )
+    params: dict = {
+        "adjusted": "true",
+        "sort":     "asc",
+        "limit":    50000,
+        "apiKey":   POLYGON_API_KEY,
+    }
+    all_results: list[dict] = []
+    while url:
+        resp = requests.get(url, params=params, timeout=20)
+        resp.raise_for_status()
+        data = resp.json()
+        if data.get("status") not in ("OK", "DELAYED"):
+            break
+        all_results.extend(data.get("results") or [])
+        # Follow pagination cursor; next_url already has apiKey embedded
+        url    = data.get("next_url")
+        params = {}  # don't re-send params with next_url
+    if not all_results:
+        return pd.DataFrame()
+    df = pd.DataFrame(all_results)
+    df = df.rename(columns={"t": "time", "o": "open", "h": "high",
+                             "l": "low",  "c": "close", "v": "volume"})
+    df["time"] = pd.to_datetime(df["time"], unit="ms", utc=True)
+    return _normalise(df)
+
+
 # ── Public API ────────────────────────────────────────────────────────────────
 
 def get_historical_ohlcv(
@@ -316,7 +484,7 @@ def get_historical_ohlcv(
         timeframe: timeframe string          e.g. "1h", "4h", "1d"
         start:     inclusive start datetime
         end:       exclusive end datetime    (defaults to now)
-        source:    force a specific source   "ccxt" | "finnhub" | "yfinance" | "ibkr"
+        source:    force a specific source   "polygon" | "ccxt" | "finnhub" | "yfinance" | "openbb" | "ibkr"
 
     Returns:
         DataFrame with columns: time, open, high, low, close, volume
@@ -340,7 +508,7 @@ def get_historical_ohlcv(
         elif is_forex:
             source = "finnhub"
         else:
-            source = "yfinance"
+            source = "polygon"  # primary for stocks/ETFs (Polygon.io)
 
     # Try IBKR if explicitly requested
     if source == "ibkr":
@@ -366,8 +534,13 @@ def get_historical_ohlcv(
                         client.get_historical_ohlcv(resolved, timeframe, start_utc, end_utc)
                     )
                     # Wait for result (blocking)
-                    df = asyncio.run(df)
-                
+                    # df is a Task — get result by running the event loop
+                    loop2 = asyncio.new_event_loop()
+                    try:
+                        df = loop2.run_until_complete(df)
+                    finally:
+                        loop2.close()
+
                 if not df.empty:
                     return df
             else:
@@ -396,6 +569,26 @@ def get_historical_ohlcv(
                 return result[result["time"] <= end_utc].reset_index(drop=True)
         except Exception as e:
             errors.append(f"ccxt: {e}")
+        # Polygon fallback for crypto (X:BTCUSD style ticker)
+        if is_crypto:
+            try:
+                pg_ticker = _to_polygon_ticker(symbol)
+                df = _fetch_polygon(pg_ticker, timeframe, start_utc, end_utc)
+                if not df.empty:
+                    log.info("CCXT failed for %s, used Polygon fallback", symbol)
+                    return df
+            except Exception as e:
+                errors.append(f"polygon-crypto-fallback: {e}")
+        # Final crypto fallback: raw yfinance
+        if is_crypto:
+            try:
+                resolved_yf = _resolve_symbol(symbol, "yfinance")
+                df = _fetch_yfinance(resolved_yf, timeframe, start_utc, end_utc)
+                if not df.empty:
+                    log.info("CCXT+Polygon failed for %s, used yfinance fallback", symbol)
+                    return df
+            except Exception as e:
+                errors.append(f"yfinance-crypto-fallback: {e}")
 
     if source == "finnhub":
         try:
@@ -410,16 +603,59 @@ def get_historical_ohlcv(
                 return df
         except Exception as e:
             errors.append(f"finnhub: {e}")
-        # Fallback to yfinance if finnhub failed, but only for non-crypto assets
+        # Polygon fallback for forex (C:EURUSD style)
+        if not is_crypto:
+            try:
+                pg_ticker = _to_polygon_ticker(symbol)
+                df = _fetch_polygon(pg_ticker, timeframe, start_utc, end_utc)
+                if not df.empty:
+                    log.info("Finnhub failed for %s, used Polygon fallback", symbol)
+                    return df
+            except Exception as e:
+                errors.append(f"polygon-forex-fallback: {e}")
+        # Final forex fallback: raw yfinance
         if not is_crypto:
             try:
                 resolved_yf = _resolve_symbol(symbol, "yfinance")
                 df = _fetch_yfinance(resolved_yf, timeframe, start_utc, end_utc)
                 if not df.empty:
-                    log.info("Finnhub failed for %s, used yfinance fallback", symbol)
+                    log.info("Finnhub+Polygon failed for %s, used yfinance fallback", symbol)
                     return df
             except Exception as e:
                 errors.append(f"yfinance-fallback: {e}")
+
+    if source == "polygon":
+        # Primary for stocks/ETFs; also callable explicitly for crypto/forex
+        try:
+            pg_ticker = _resolve_symbol(symbol, "polygon")
+            df = _fetch_polygon(pg_ticker, timeframe, start_utc, end_utc)
+            if not df.empty:
+                return df
+        except Exception as e:
+            errors.append(f"polygon: {e}")
+        # yfinance safety net
+        if not is_crypto:
+            try:
+                resolved = _resolve_symbol(symbol, "yfinance")
+                df = _fetch_yfinance(resolved, timeframe, start_utc, end_utc)
+                if not df.empty:
+                    log.info("Polygon failed for %s, used yfinance fallback", symbol)
+                    return df
+            except Exception as e:
+                errors.append(f"yfinance-polygon-fallback: {e}")
+
+    if source == "openbb":
+        # OpenBB is currently non-functional (openbb 4.7.1 / openbb-core 1.6.7
+        # version mismatch: OBBject_EquityInfo not in provider_interface namespace).
+        # Fall through to yfinance.
+        if not is_crypto:
+            try:
+                resolved = _resolve_symbol(symbol, "yfinance")
+                df = _fetch_yfinance(resolved, timeframe, start_utc, end_utc)
+                if not df.empty:
+                    return df
+            except Exception as e:
+                errors.append(f"openbb-yfinance-fallback: {e}")
 
     if source in ("yfinance", "fallback"):
         # Only allow yfinance for non-crypto assets
@@ -479,7 +715,7 @@ def get_latest_candles(
         _KRAKEN_WS_AVAILABLE and is_crypto and timeframe in supported_kraken_tfs
     ):
         try:
-            client = KrakenWebSocketClient()
+            client = KrakenWebSocketClient()  # type: ignore[operator]
             import asyncio
             async def fetch_ws():
                 await client.connect()

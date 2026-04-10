@@ -129,9 +129,9 @@ class TestFormalTimeframes:
 class TestScalpExitPolicyPhase4Fields:
     def test_scalp_lock_stage_thresholds(self):
         stages = ScalpExitPolicy.profit_lock_stages
-        assert stages[0] == (1.50, 0.50)
-        assert stages[1] == (2.00, 1.00)
-        assert stages[2] == (2.50, 1.50)
+        assert stages[0] == (0.50, 0.15)
+        assert stages[1] == (1.00, 0.50)
+        assert stages[2] == (1.50, 1.00)
 
     def test_scalp_trail_mode_is_atr(self):
         assert ScalpExitPolicy.trail_mode == "atr"
@@ -413,7 +413,7 @@ class TestTradeRecordPhase4Defaults:
             jaw_at_entry=99.0, teeth_at_entry=99.5, lips_at_entry=99.8,
         )
         defaults.update(kwargs)
-        return TradeRecord(**defaults)
+        return TradeRecord(**defaults)  # type: ignore[arg-type]
 
     def test_indicator_flags_default_none(self):
         assert self._rec().indicator_flags is None

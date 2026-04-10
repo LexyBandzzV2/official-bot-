@@ -66,7 +66,9 @@ _VALID_STATES = frozenset({
     "STAGE_2_LOCKED",
     "STAGE_3_LOCKED",
     "CANDLE_TRAIL",
+    "CANDLE_STRUCTURE_TRAIL",
     "ATR_TRAIL",
+    "MOMENTUM_FADE",
 })
 
 
@@ -121,6 +123,7 @@ class ExitPolicy:
     name:                    str
     giveback_frac:           float
     break_even_pct:          float
+    min_mfe_pct:             float = 0.001  # min favorable excursion % before giveback can fire
     profit_lock_stages:      list[tuple[float, float]] = field(default_factory=list)
     # Phase 4 fields — all have safe defaults so existing ExitPolicy(...) calls are unaffected
     trail_mode:              str   = "candle"
@@ -134,21 +137,23 @@ class ExitPolicy:
     adverse_wick_threshold:  float = 0.30  # adverse wick ≥ this = pushback signal (informational)
     fade_confirmation_bars:  int   = 1     # min weak bars in window before tightening fires
     fade_tighten_frac:       float = 0.30  # ATR fraction for candle-trail candidate stop
+    candle_trail_lookback_bars: int = 5    # lookback for recent swing structure (Stage 4 candle trail)
 
 
 # ── Concrete policies ─────────────────────────────────────────────────────────
 
 ScalpExitPolicy = ExitPolicy(
     name               = "SCALP",
-    giveback_frac      = 0.25,
-    break_even_pct     = 0.30,
+    giveback_frac      = 0.50,     # retrace 50% of max favorable move before exit (was 0.25)
+    break_even_pct     = 0.15,     # arm break-even earlier at +0.15% (was 0.30)
+    min_mfe_pct        = 0.20,     # peak must reach +0.20% before giveback can fire
     profit_lock_stages = [
-        (1.50, 0.50),   # Stage 1: reach +1.50% → lock +0.50% above entry
-        (2.00, 1.00),   # Stage 2: reach +2.00% → lock +1.00% above entry | ATR eligible
-        (2.50, 1.50),   # Stage 3: reach +2.50% → lock +1.50% above entry
+        (0.50, 0.15),   # Stage 1: reach +0.50% → lock +0.15% above entry (was 1.50/0.50)
+        (1.00, 0.50),   # Stage 2: reach +1.00% → lock +0.50% above entry | ATR eligible (was 2.00/1.00)
+        (1.50, 1.00),   # Stage 3: reach +1.50% → lock +1.00% above entry (was 2.50/1.50)
     ],
     trail_mode               = "atr",
-    atr_multiplier           = 1.5,
+    atr_multiplier           = 0.8,
     atr_eligible_after_stage = 2,    # ATR trail only after stage-2 lock is reached
     momentum_fade_window     = 3,    # inspect last 3 bars for shrinking-body fade
     fade_confirmation_bars   = 2,    # require 2 weak bars before tightening fires
@@ -183,8 +188,9 @@ IntermediateExitPolicy = ExitPolicy(
         (2.00, 1.00),
         (3.00, 1.50),
     ],
-    trail_mode           = "candle",
-    momentum_fade_window = 3,   # candle-quality tightening enabled for intermediate
+    trail_mode                 = "candle",
+    candle_trail_lookback_bars = 5,
+    momentum_fade_window       = 3,   # candle-quality tightening enabled for intermediate
 )
 
 SwingExitPolicy = ExitPolicy(
@@ -196,8 +202,9 @@ SwingExitPolicy = ExitPolicy(
         (4.00, 2.00),
         (6.00, 3.00),
     ],
-    trail_mode           = "candle",
-    momentum_fade_window = 0,   # disabled — too noisy on higher timeframes
+    trail_mode                 = "candle",
+    candle_trail_lookback_bars = 8,    # wider lookback for swing timeframes
+    momentum_fade_window       = 0,   # disabled — too noisy on higher timeframes
 )
 
 # Mapping from timeframe string to policy

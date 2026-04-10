@@ -22,9 +22,9 @@ be_armed_rate          — fraction where break_even_armed=True
 stage_1_rate           — fraction reaching profit_lock_stage >= 1
 stage_2_rate           — fraction reaching profit_lock_stage >= 2
 stage_3_rate           — fraction reaching profit_lock_stage >= 3
-candle_trail_rate      — fraction with trail_active_mode == "candle_trail"
+candle_trail_rate      — fraction with trail_active_mode in ("candle_trail", "candle_structure_trail")
 atr_trail_rate         — fraction with trail_active_mode == "atr_trail"
-momentum_fade_rate     — alias for candle_trail_rate (they are the same event)
+momentum_fade_rate     — fraction with trail_active_mode == "momentum_fade"
 fallback_policy_rate   — fraction with used_fallback_policy=True
 """
 
@@ -101,11 +101,15 @@ def _compute_mode_stats(mode_trades: list[Any]) -> dict:
     # Trail mode rates
     candle_trail_rate = _rate(
         mode_trades, "trail_active_mode",
-        lambda m: m == "candle_trail"
+        lambda m: m in ("candle_trail", "candle_structure_trail")
     )
     atr_trail_rate = _rate(
         mode_trades, "trail_active_mode",
         lambda m: m == "atr_trail"
+    )
+    momentum_fade_rate = _rate(
+        mode_trades, "trail_active_mode",
+        lambda m: m == "momentum_fade"
     )
 
     # Fallback policy
@@ -125,7 +129,7 @@ def _compute_mode_stats(mode_trades: list[Any]) -> dict:
         "stage_3_rate":          stage_3_rate,
         "candle_trail_rate":     candle_trail_rate,
         "atr_trail_rate":        atr_trail_rate,
-        "momentum_fade_rate":    candle_trail_rate,   # candle_trail IS the fade trigger
+        "momentum_fade_rate":    momentum_fade_rate,
         "fallback_policy_rate":  fallback_policy_rate,
     }
 

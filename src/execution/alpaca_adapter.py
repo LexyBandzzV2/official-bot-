@@ -149,6 +149,14 @@ class AlpacaAdapter:
             )
             if r.status_code not in (200, 201):
                 log.error("Alpaca market order failed: %s %s", r.status_code, r.text[:400])
+                try:
+                    import json as _j
+                    from src.display.tables import print_broker_error
+                    _err = _j.loads(r.text) if r.text else {}
+                    _msg = _err.get("message", r.text[:120])
+                    print_broker_error(sym, side, r.status_code, str(_msg))
+                except Exception:
+                    pass
                 return None
             order = r.json()
             oid = order.get("id")
@@ -159,25 +167,28 @@ class AlpacaAdapter:
             filled_px = float(filled.get("filled_avg_price") or order.get("filled_avg_price") or expected_entry)
 
             stop_side = "sell" if side == "buy" else "buy"
-            stop_body = {
-                "symbol": sym,
-                "qty": qty_str,
-                "side": stop_side,
-                "type": "stop",
-                "stop_price": str(round(float(stop_loss), 8)),
-                "time_in_force": "gtc",
-            }
-            rs = requests.post(
-                f"{self._base}/v2/orders",
-                headers=self._headers(),
-                data=json.dumps(stop_body),
-                timeout=30,
-            )
             stop_id = None
-            if rs.status_code in (200, 201):
-                stop_id = rs.json().get("id")
-            else:
-                log.warning("Alpaca stop order failed: %s %s", rs.status_code, rs.text[:300])
+            if ac != "crypto":
+                # Alpaca only supports stop orders for equities, not crypto.
+                # Crypto exits are managed entirely by the bot's internal trailing stop loop.
+                stop_body = {
+                    "symbol": sym,
+                    "qty": qty_str,
+                    "side": stop_side,
+                    "type": "stop",
+                    "stop_price": str(round(float(stop_loss), 8)),
+                    "time_in_force": "gtc",
+                }
+                rs = requests.post(
+                    f"{self._base}/v2/orders",
+                    headers=self._headers(),
+                    data=json.dumps(stop_body),
+                    timeout=30,
+                )
+                if rs.status_code in (200, 201):
+                    stop_id = rs.json().get("id")
+                else:
+                    log.warning("Alpaca stop order failed: %s %s", rs.status_code, rs.text[:300])
 
             tp_id = None
             if take_profit is not None:
@@ -255,6 +266,11 @@ class AlpacaAdapter:
             if r.status_code in (200, 204):
                 del self._trades[trade_id]
                 return True
+            if r.status_code == 404:
+                # Position already closed (broker-side stop fired) — treat as success
+                log.info("Alpaca position %s already closed (broker stop filled)", sym)
+                self._trades.pop(trade_id, None)
+                return True
             log.warning("Alpaca close position %s: %s %s", sym, r.status_code, r.text[:300])
         except Exception as e:
             log.error("Alpaca close_order: %s", e)
@@ -278,6 +294,12 @@ class AlpacaAdapter:
         self._cancel_if(st.get("stop_order_id"))
         if new_tp is not None:
             self._cancel_if(st.get("tp_order_id"))
+
+        # Alpaca does not support stop orders for crypto — exits are managed
+        # internally by the bot's trailing stop loop via market close orders.
+        if "/" in sym:
+            st["stop_order_id"] = None
+            return True
 
         ok = True
         try:

@@ -35,7 +35,15 @@ Usage examples:
 
 from __future__ import annotations
 
+import os
 import sys
+
+# Ensure Python uses UTF-8 for stdout/stderr so Rich can print Unicode
+# box-drawing characters and symbols on Windows terminals that default to cp1252.
+if sys.platform == "win32" and not os.environ.get("PYTHONIOENCODING"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[union-attr]
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[union-attr]
+
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Optional
@@ -46,7 +54,7 @@ from rich.panel   import Panel
 from rich.table   import Table
 from rich         import box
 
-console = Console()
+console = Console(force_terminal=True)
 
 # Ensure src/ is importable when running bot.py from project root
 sys.path.insert(0, str(Path(__file__).parent))
@@ -553,7 +561,7 @@ def cmd_start(timeframe, ticker, category, dry_run, live, broker, top, balance):
     selected_broker = None if str(broker).lower() == "auto" else str(broker).lower()
     if live:
         console.print(Panel(
-            "[bold red]⚠  ORDER ROUTING ENABLED — The scanner will submit orders per TRADING_MODE and BrokerRouter[/]\n"
+            "[bold red]WARNING: ORDER ROUTING ENABLED -- The scanner will submit orders per TRADING_MODE and BrokerRouter[/]\n"
             "(Alpaca paper/live, IBKR, Kraken, or MT5). Press Ctrl+C to stop cleanly.",
             border_style="red",
         ))

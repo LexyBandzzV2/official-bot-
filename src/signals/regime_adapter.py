@@ -99,7 +99,7 @@ def apply_regime_score_bias(
         regime_ctx.regime_score_adjustment = bias
         regime_ctx.regime_score_reason = ", ".join(reasons)
 
-        log.info(
+        log.debug(
             "Regime score bias: %s %s/%s score %.1f → %.1f (bias=%+.1f: %s)",
             getattr(sig, "asset", "?"),
             getattr(sig, "timeframe", "?"),
@@ -109,6 +109,19 @@ def apply_regime_score_bias(
             bias,
             regime_ctx.regime_score_reason,
         )
+        try:
+            from src.display.tables import print_regime_bias
+            print_regime_bias(
+                getattr(sig, "asset", "?"),
+                getattr(sig, "timeframe", "?"),
+                getattr(sig, "signal_type", "?"),
+                old_score,
+                float(sig.score_total),
+                bias,
+                regime_ctx.regime_score_reason,
+            )
+        except Exception:
+            pass
     except Exception as exc:
         log.debug("apply_regime_score_bias failed: %s", exc)
 

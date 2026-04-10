@@ -48,3 +48,23 @@ def latest_atr(ha_df: pd.DataFrame, period: int = 14) -> float:
     # Find last non-NaN
     valid = atr[~np.isnan(atr)]
     return float(valid[-1]) if len(valid) > 0 else 0.0
+
+
+def get_recent_extremes(
+    ha_df: pd.DataFrame,
+    lookback: int = 5,
+) -> tuple[float, float]:
+    """Return (recent_low, recent_high) over the last *lookback* HA candles.
+
+    Used by the candle-structure trailing system to place the trail stop just
+    beyond recent swing structure.
+
+    If the DataFrame has fewer rows than *lookback*, all available rows are used.
+    Returns ``(nan, nan)`` when the DataFrame is empty.
+    """
+    if ha_df is None or len(ha_df) == 0:
+        return (float("nan"), float("nan"))
+    tail = ha_df.iloc[-lookback:]
+    recent_low  = float(tail["ha_low"].min())
+    recent_high = float(tail["ha_high"].max())
+    return recent_low, recent_high

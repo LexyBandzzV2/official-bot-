@@ -17,16 +17,16 @@ from rich.panel import Panel
 from rich import box
 from rich.text import Text
 from rich.columns import Columns
+from rich.rule import Rule
 
 from src.signals.types import BuySignalResult, SellSignalResult, TradeRecord
 
 console = Console()
 
 try:
-    from src.config import TIMEZONE, ML_CONFIDENCE_THRESHOLD, AI_CONFIDENCE_THRESHOLD
+    from src.config import TIMEZONE, AI_CONFIDENCE_THRESHOLD
 except ImportError:
     TIMEZONE = "America/Toronto"
-    ML_CONFIDENCE_THRESHOLD = 0.65
     AI_CONFIDENCE_THRESHOLD = 0.60
 
 _tz = pytz.timezone(TIMEZONE)
@@ -78,10 +78,6 @@ def print_buy_signal(sig: BuySignalResult) -> None:
     if sig.ai_confidence is not None:
         conf_col = "green" if sig.ai_confidence >= AI_CONFIDENCE_THRESHOLD else "yellow"
         t.add_row("AI Confidence", f"[{conf_col}]{sig.ai_confidence*100:.0f}%  (LM Studio)[/{conf_col}]")
-    if sig.ml_confidence is not None:
-        ml_col = "green" if sig.ml_confidence >= ML_CONFIDENCE_THRESHOLD else "yellow"
-        label  = "PASS" if sig.ml_confidence >= ML_CONFIDENCE_THRESHOLD else "WARN"
-        t.add_row("ML Filter", f"[{ml_col}]{label} — predicted win prob: {sig.ml_confidence*100:.0f}%[/{ml_col}]")
 
     console.print(Panel(t, title="[bold green]🟢  BUY SIGNAL[/bold green]",
                         border_style="green", expand=False))
@@ -116,10 +112,6 @@ def print_sell_signal(sig: SellSignalResult) -> None:
     if sig.ai_confidence is not None:
         conf_col = "green" if sig.ai_confidence >= AI_CONFIDENCE_THRESHOLD else "yellow"
         t.add_row("AI Confidence", f"[{conf_col}]{sig.ai_confidence*100:.0f}%  (LM Studio)[/{conf_col}]")
-    if sig.ml_confidence is not None:
-        ml_col = "green" if sig.ml_confidence >= ML_CONFIDENCE_THRESHOLD else "yellow"
-        label  = "PASS" if sig.ml_confidence >= ML_CONFIDENCE_THRESHOLD else "WARN"
-        t.add_row("ML Filter", f"[{ml_col}]{label} — predicted win prob: {sig.ml_confidence*100:.0f}%[/{ml_col}]")
 
     console.print(Panel(t, title="[bold red]🔴  SELL SIGNAL[/bold red]",
                         border_style="red", expand=False))
@@ -298,22 +290,48 @@ def print_kill_switch(loss_pct: float) -> None:
 # ── Status summary ────────────────────────────────────────────────────────────
 
 def print_status(
-    account_balance: float,
-    daily_loss_pct:  float,
-    open_count:      int,
-    hourly_remaining:int,
-    scanner_running: bool,
+    account_balance:  float = 0.0,
+    daily_loss_pct:   float = 0.0,
+    open_count:       int   = 0,
+    hourly_remaining: int   = 0,
+    scanner_running:  bool  = False,
+    # System health fields (used by the `status` CLI command)
+    lm_studio_ok:   bool  = False,
+    openrouter_ok:  bool  = False,
+    finnhub_ok:     bool  = False,
+    supabase_ok:    bool  = False,
+    ml_ready:       bool  = False,
+    ml_samples:     int   = 0,
+    open_trades:    int   = 0,
+    closed_trades:  int   = 0,
+    timezone:       str   = "",
 ) -> None:
     t = Table(box=box.ROUNDED, show_header=False, border_style="cyan", padding=(0, 1))
     t.add_column("k", style="bold white",  no_wrap=True)
     t.add_column("v", style="bright_white", no_wrap=False)
 
-    t.add_row("Scanner",          "[green]RUNNING[/green]" if scanner_running else "[red]STOPPED[/red]")
+    t.add_row("Scanner",          "[green]RUNNING[/green]" if scanner_running else "[dim]stopped[/dim]")
     t.add_row("Time",             _now_str())
-    t.add_row("Account Balance",  f"[bold yellow]${account_balance:,.2f}[/bold yellow]")
-    t.add_row("Daily Loss",       f"[{'red' if daily_loss_pct > 5 else 'yellow'}]{daily_loss_pct:.2f}%[/]  (limit 10%)")
-    t.add_row("Open Positions",   str(open_count))
-    t.add_row("Trades Left / hr", str(hourly_remaining))
+    if account_balance:
+        t.add_row("Account Balance",  f"[bold yellow]${account_balance:,.2f}[/bold yellow]")
+    if daily_loss_pct:
+        t.add_row("Daily Loss",   f"[{'red' if daily_loss_pct > 5 else 'yellow'}]{daily_loss_pct:.2f}%[/]")
+    t.add_row("Open Positions",   str(open_trades or open_count))
+    t.add_row("Closed Trades",    str(closed_trades))
+    if hourly_remaining:
+        t.add_row("Trades Left / hr", str(hourly_remaining))
+
+    # System health section
+    def _ok(v: bool) -> str:
+        return "[green]OK[/green]" if v else "[red]NOT CONNECTED[/red]"
+
+    t.add_row("LM Studio",    _ok(lm_studio_ok))
+    t.add_row("OpenRouter",   _ok(openrouter_ok))
+    t.add_row("Finnhub",      _ok(finnhub_ok))
+    t.add_row("Supabase",     _ok(supabase_ok))
+    t.add_row("ML Model",     f"[green]READY ({ml_samples} samples)[/green]" if ml_ready else "[yellow]NOT TRAINED[/yellow]")
+    if timezone:
+        t.add_row("Timezone", timezone)
 
     console.print(Panel(t, title="[bold cyan]AlgoBot Status[/bold cyan]",
                         border_style="cyan", expand=False))
@@ -343,6 +361,135 @@ def print_pnl_summary(rows: list) -> None:
     t.add_row("Avg Loss",     f"${sum(r.get('pnl',0) for r in losing)/len(losing):.2f}"   if losing  else "—")
     t.add_row("Total Trades", str(len(rows)))
     console.print(t)
+
+
+# ── Rejection event (compact card) ───────────────────────────────────────────
+
+def print_rejected(
+    signal_type: str,
+    asset: str,
+    timeframe: str,
+    reason: str,
+    entry: Optional[float] = None,
+    ai_conf: Optional[float] = None,
+) -> None:
+    ts = datetime.now(_tz).strftime("%I:%M:%S %p")
+    dir_col = "green" if signal_type == "BUY" else "red"
+
+    # Map raw reason codes to plain English
+    _REASON_MAP = {
+        "broker_router_rejected_or_not_placed": "Broker order rejected / not placed",
+        "CONFLICT_SUPPRESSED": "Conflicting BUY+SELL — both suppressed",
+        "broker_unavailable": "No broker connected",
+        "position_size_zero": "Position size calculated as zero",
+        "regime_size_factor_zeroed": "Regime filter zeroed position size",
+    }
+    if reason.startswith("DUPLICATE_POSITION"):
+        display_reason = f"Already in a position ({asset})"
+    elif reason.startswith("AI rejected"):
+        display_reason = reason  # already readable
+    else:
+        display_reason = _REASON_MAP.get(reason, reason)
+
+    t = Table(box=box.SIMPLE, show_header=False, padding=(0, 1), border_style="yellow")
+    t.add_column("k", style="bold white", no_wrap=True, min_width=10)
+    t.add_column("v", style="bright_white", no_wrap=False)
+
+    t.add_row("Symbol",    f"[bold cyan]{asset}[/bold cyan]  [dim]{timeframe}[/dim]")
+    t.add_row("Direction", f"[bold {dir_col}]{signal_type}[/bold {dir_col}]")
+    if entry is not None:
+        t.add_row("Entry",  f"[yellow]{_fmt_price(entry)}[/yellow]")
+    if ai_conf is not None:
+        t.add_row("AI Conf", f"{ai_conf * 100:.0f}%")
+    t.add_row("Reason",    f"[yellow]{display_reason}[/yellow]")
+
+    console.print(Panel(
+        t,
+        title=f"[yellow]⚠  REJECTED  [dim]{ts}[/dim][/yellow]",
+        border_style="yellow",
+        expand=False,
+    ))
+
+
+# ── Broker error panel ────────────────────────────────────────────────────────
+
+def print_broker_error(
+    symbol: str,
+    direction: str,
+    http_status: int,
+    error_summary: str,
+) -> None:
+    ts = datetime.now(_tz).strftime("%I:%M:%S %p")
+    t = Table(box=box.SIMPLE, show_header=False, padding=(0, 1), border_style="red")
+    t.add_column("k", style="bold white", no_wrap=True, min_width=12)
+    t.add_column("v", style="bright_white", no_wrap=False)
+
+    dir_col = "green" if direction.upper() == "BUY" else "red"
+    t.add_row("Symbol",    f"[bold cyan]{symbol}[/bold cyan]")
+    t.add_row("Direction", f"[bold {dir_col}]{direction.upper()}[/bold {dir_col}]")
+    t.add_row("HTTP",      f"[red]{http_status}[/red]")
+    t.add_row("Error",     f"[red]{error_summary}[/red]")
+
+    console.print(Panel(
+        t,
+        title=f"[bold red]🔴  BROKER ERROR  [dim]{ts}[/dim][/bold red]",
+        border_style="red",
+        expand=False,
+    ))
+
+
+# ── Regime change (compact inline) ────────────────────────────────────────────
+
+def print_regime_change(
+    symbol: str,
+    timeframe: str,
+    regime: str,
+    conf: float,
+    evidence: str,
+) -> None:
+    ts = datetime.now(_tz).strftime("%I:%M:%S %p")
+    conf_col = "green" if conf >= 0.70 else "yellow" if conf >= 0.50 else "dim"
+    console.print(
+        f"[dim]{ts}[/dim]  [bold cyan]📊 Regime[/bold cyan]  "
+        f"[bold]{symbol}[/bold] [dim]{timeframe}[/dim]  "
+        f"[bold white]{regime}[/bold white]  "
+        f"[{conf_col}]conf={conf:.2f}[/{conf_col}]  "
+        f"[dim]{evidence}[/dim]"
+    )
+
+
+# ── Regime score bias (compact inline) ────────────────────────────────────────
+
+def print_regime_bias(
+    symbol: str,
+    timeframe: str,
+    signal_type: str,
+    old_score: float,
+    new_score: float,
+    bias: float,
+    reason: str,
+) -> None:
+    ts = datetime.now(_tz).strftime("%I:%M:%S %p")
+    bias_col = "green" if bias >= 0 else "red"
+    dir_col = "green" if signal_type == "BUY" else "red"
+    console.print(
+        f"[dim]{ts}[/dim]  [bold magenta]⚖  Regime Bias[/bold magenta]  "
+        f"[bold]{symbol}[/bold] [dim]{timeframe}[/dim]  "
+        f"[{dir_col}]{signal_type}[/{dir_col}]  "
+        f"score [dim]{old_score:.0f}[/dim] → [bold white]{new_score:.0f}[/bold white]  "
+        f"[{bias_col}]{bias:+.1f}[/{bias_col}]  [dim]({reason})[/dim]"
+    )
+
+
+# ── AI unavailable notice (single dim line) ───────────────────────────────────
+
+def print_ai_unavailable(signal_type: str, asset: str, score: float = 0.4) -> None:
+    ts = datetime.now(_tz).strftime("%I:%M:%S %p")
+    dir_col = "green" if signal_type == "BUY" else "red"
+    console.print(
+        f"[dim]{ts}  🤖 No AI — using neutral score {score:.0f}%  "
+        f"[{dir_col}]{signal_type}[/{dir_col}] {asset}[/dim]"
+    )
 
 
 # ── Internal helper ───────────────────────────────────────────────────────────

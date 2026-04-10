@@ -102,7 +102,7 @@ class TestGenerateReport:
         # Patch directly in the module namespace
         import src.tools.forensic_report as fr_mod
         monkeypatch.setattr(fr_mod, "generate_report",
-            lambda tid: fr_mod.generate_report.__wrapped__(tid) if hasattr(fr_mod.generate_report, "__wrapped__") else fr_mod.generate_report(tid),
+            lambda tid: getattr(fr_mod.generate_report, "__wrapped__", fr_mod.generate_report)(tid),
             raising=False,
         )
         # Simpler: call diagnose directly and check report manually

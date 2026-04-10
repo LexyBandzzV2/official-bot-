@@ -23,33 +23,35 @@ try:
     from src.ai.openrouter_client import OpenRouterClient
 except ImportError:
     AI_CONFIDENCE_THRESHOLD = 0.60
-    LMStudioClient    = None   # type: ignore
-    OpenRouterClient  = None   # type: ignore
+    LMStudioClient    = None   # type: ignore[assignment,misc]
+    OpenRouterClient  = None   # type: ignore[assignment,misc]
+
+from typing import Any as _Any
 
 # Module-level client singletons (lazy initialised)
-_lm_client: Optional[LMStudioClient]   = None
-_or_client: Optional[OpenRouterClient] = None
+_lm_client: _Any = None
+_or_client: _Any = None
 
 
-def _get_lm() -> LMStudioClient:
+def _get_lm() -> _Any:
     global _lm_client
     if _lm_client is None:
-        _lm_client = LMStudioClient()
+        _lm_client = LMStudioClient()  # type: ignore[misc]
     return _lm_client
 
 
-def _get_or() -> OpenRouterClient:
+def _get_or() -> _Any:
     global _or_client
     if _or_client is None:
-        _or_client = OpenRouterClient()
+        _or_client = OpenRouterClient()  # type: ignore[misc]
     return _or_client
 
 
 # ── Prompt builder ─────────────────────────────────────────────────────────────
 
-def _build_prompt(sig: object) -> str:
+def _build_prompt(sig: _Any) -> str:
     """Construct a human-readable signal context string for the LLM."""
-    sl  = sig       # type: ignore
+    sl = sig
     direction = sl.signal_type  # "BUY" or "SELL"
     lines = [
         f"TRADING SIGNAL ANALYSIS REQUEST",
@@ -109,8 +111,13 @@ def rank_signal(sig: object) -> float:
             log.debug("Kimi K2 scored %s %s → %.0f%%", sig.signal_type, sig.asset, score * 100)  # type: ignore
             return score
 
-    log.info("No AI client available — returning neutral score 0.4 for %s %s",
-             sig.signal_type, sig.asset)  # type: ignore
+    log.debug("No AI client available — returning neutral score 0.4 for %s %s",
+              sig.signal_type, sig.asset)  # type: ignore
+    try:
+        from src.display.tables import print_ai_unavailable
+        print_ai_unavailable(sig.signal_type, sig.asset)  # type: ignore
+    except Exception:
+        pass
     return 0.4
 
 

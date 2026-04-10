@@ -217,7 +217,7 @@ class TradeRecord:
     entry_reason_code:                Optional[str]      = None
     # compact machine-readable: "al+st+vo:ml87:ai72"
     trail_active_mode:                Optional[str]      = None
-    # "initial_stop"|"break_even"|"stage_1"|"stage_2"|"stage_3"|"candle_trail"|"atr_trail"
+    # "initial_stop"|"break_even"|"stage_1"|"stage_2"|"stage_3"|"candle_trail"|"candle_structure_trail"|"atr_trail"|"momentum_fade"
     used_fallback_policy:             bool               = False
     # True when timeframe is not in FORMAL_TIMEFRAMES (e.g. 1m, 30m, 3h, 1d)
     # Populated at close

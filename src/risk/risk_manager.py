@@ -195,7 +195,7 @@ class RiskManager:
         if rec is None:
             return False, ""
 
-        trail: TrailingStop = getattr(rec, "_trail_stop", None)
+        trail: Optional[TrailingStop] = getattr(rec, "_trail_stop", None)
 
         # 1. Hard stop (safety net first)
         if rec.signal_type == "BUY" and current_price <= rec.stop_loss_hard:
@@ -203,14 +203,14 @@ class RiskManager:
         if rec.signal_type == "SELL" and current_price >= rec.stop_loss_hard:
             return True, "HARD_STOP"
 
-        # 2. Peak giveback — bar-close retraced giveback_frac of max favorable move.
-        #    Can close at a loss when MFE is small (see PeakGiveback class docs).
-        if peak_giveback is not None and peak_giveback.is_triggered(current_price):
-            return True, "PEAK_GIVEBACK_EXIT"
-
-        # 3. Teeth trailing stop
+        # 2. Teeth trailing stop (only moves forward, never backward)
         if trail and trail.is_triggered(current_price):
             return True, "TRAIL_STOP"
+
+        # 3. Peak giveback — bar-close retraced giveback_frac of max favorable move.
+        #    Checked AFTER trailing stop so the forward-only trail gets priority.
+        if peak_giveback is not None and peak_giveback.is_triggered(current_price):  # type: ignore[union-attr]
+            return True, "PEAK_GIVEBACK_EXIT"
 
         # 4. Alligator lips-touch (fallback / audit exit)
         if ha_df is not None:

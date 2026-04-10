@@ -1,6 +1,6 @@
 """Signal score engine — Phase 5.
 
-Computes a transparent 0\u2013100 numeric score for every evaluated signal,
+Computes a transparent 0–100 numeric score for every evaluated signal,
 broken down into per-component sub-scores so you can see *exactly* why a
 signal was accepted or rejected.
 
@@ -11,43 +11,36 @@ structure_points          (max 20)
     20 if alligator_point, else 0.
 
 indicator_points          (max 20)
-    10 \u00d7 (stochastic_point + vortex_point).
+    10 × (stochastic_point + vortex_point).
     20 = both fired, 10 = one fired, 0 = neither.
 
 timeframe_alignment_points  (max 10)
     10 for formal timeframes (3m / 5m / 15m / 1h / 2h / 4h).
-    5  for informal timeframes (1m, 30m, 3h, 1d \u2026).
-    Formal set is the same frozenset defined in Phase 1 / 4.
+    5  for informal timeframes (1m, 30m, 3h, 1d …).
 
 candle_quality_points       (max 20)
-    Derived from the last Heikin-Ashi bar's body-to-range ratio using the
-    candle_quality module introduced in Phase 4.
-    \u2265\u00a00.70 \u2192 20 (strong), \u2265\u00a00.40 \u2192 10 (moderate), < 0.40 \u2192 0 (weak / indecisive).
-    Graceful: returns 0 when *ha_df* is None or the candle_quality import fails.
+    Derived from the last Heikin-Ashi bar's body-to-range ratio.
+    ≥ 0.70 → 20 (strong), ≥ 0.40 → 10 (moderate), < 0.40 → 0 (weak).
 
 volatility_points           (max 10)
     10 when the most-recent ATR (column ``atr_14``) is present and > 0.
     0  when ha_df is None or the column is missing.
 
-ml_adjustment_points        (max +10 / min \u221220)
-    Applied *after* the ML gate fires:
-      \u2022 ml_prob \u2265 threshold + 0.15  \u2192 +10 (\"boosted\")
-      \u2022 threshold \u2264 ml_prob < threshold + 0.15 \u2192  0 (\"passed\")
-      \u2022 ml_prob < threshold              \u2192 \u221220 (\"vetoed\")
-    Symmetrically applied for AI via apply_ai_effect().
+ai_adjustment               (max +10 / min −20)
+    Applied after the AI gate:
+      • ai_score ≥ threshold + 0.15  → +10 ("boosted")
+      • threshold ≤ ai_score < threshold + 0.15 →  0 ("passed")
+      • ai_score < threshold              → −20 ("vetoed")
 
-score_total  =  structure + indicator + tf_alignment + candle_quality
-                + volatility + ml_adjustment_points
+score_total  =  structure + indicator + tf_alignment + candle_quality + volatility
+                + ai_adjustment
 
-Maximum possible score  =  20+20+10+20+10+10+10 = 100.
+Maximum possible score  =  20+20+10+20+10+10 = 90.
 
 Usage
 -----
 Call *compute_score* immediately after evaluate_ha() to fill sub-scores.
-Call *apply_ml_effect* after the ML gate resolves.
 Call *apply_ai_effect* after the AI gate resolves.
-Both mutate the signal object in-place; they are safe to call even if
-compute_score was never called (they guard against AttributeError).
 """
 
 from __future__ import annotations
@@ -57,7 +50,7 @@ from typing import Any, Optional
 
 log = logging.getLogger(__name__)
 
-# Boost threshold: ml_prob > threshold + BOOST_MARGIN qualifies as "boosted"
+# Boost threshold: ai_score > threshold + BOOST_MARGIN qualifies as "boosted"
 _BOOST_MARGIN: float = 0.15
 _BOOST_SCORE:  float = 10.0
 _VETO_SCORE:   float = -20.0
@@ -146,7 +139,7 @@ def compute_score(sig: Any, ha_df: Any = None) -> None:
     al  = bool(_get(sig, "alligator_point",  False))
     st  = bool(_get(sig, "stochastic_point", False))
     vo  = bool(_get(sig, "vortex_point",     False))
-    tf  = _get(sig, "timeframe", "")
+    tf  = str(_get(sig, "timeframe", "") or "")
 
     sig.structure_points           = 20.0 if al else 0.0
     sig.indicator_points           = 10.0 * (int(st) + int(vo))
@@ -161,44 +154,9 @@ def compute_score(sig: Any, ha_df: Any = None) -> None:
         + sig.candle_quality_points
         + sig.volatility_points
     )
-    # ml_adjustment_points stays at 0 until apply_ml_effect is called
 
 
-def apply_ml_effect(sig: Any, ml_prob: float, threshold: float) -> None:
-    """Apply the ML gate result to *sig*'s score and set sig.ml_effect.
-
-    Must be called *after* compute_score().
-
-    Parameters
-    ----------
-    sig:
-        Signal result object.
-    ml_prob:
-        ML model probability for this signal (0.0–1.0).
-    threshold:
-        Configured threshold from ``ML_CONFIDENCE_THRESHOLD``.
-
-    Side-effects
-    ------------
-    Sets ``sig.ml_effect``, ``sig.ml_adjustment_points``, updates
-    ``sig.score_total``.
-    """
-    if ml_prob >= threshold + _BOOST_MARGIN:
-        effect, adj = "boosted", _BOOST_SCORE
-    elif ml_prob >= threshold:
-        effect, adj = "passed", 0.0
-    else:
-        effect, adj = "vetoed", _VETO_SCORE
-
-    # Remove any previous ML adjustment from score_total before re-applying
-    old_adj = float(_get(sig, "ml_adjustment_points", 0.0))
-    sig.score_total = float(_get(sig, "score_total", 0.0)) - old_adj + adj
-
-    sig.ml_effect            = effect
-    sig.ml_adjustment_points = adj
-
-
-def apply_ai_effect(sig: Any, ai_score: float, threshold: float) -> None:
+def apply_ai_effect(sig: Any, ai_score: float | None, threshold: float) -> None:
     """Apply the AI gate result to *sig*'s score and set sig.ai_effect.
 
     Uses a separate adjustment field stored multiplied into score_total.
@@ -214,6 +172,9 @@ def apply_ai_effect(sig: Any, ai_score: float, threshold: float) -> None:
     threshold:
         Configured threshold from ``AI_CONFIDENCE_THRESHOLD``.
     """
+    if ai_score is None:
+        return  # no AI client — leave score unchanged
+
     if ai_score >= threshold + _BOOST_MARGIN:
         effect, adj = "boosted", _BOOST_SCORE
     elif ai_score >= threshold:
@@ -224,5 +185,5 @@ def apply_ai_effect(sig: Any, ai_score: float, threshold: float) -> None:
     # Track AI adjustment separately — stored in ai_adjustment_points if present
     # (sig may not have that field; we absorb into score_total directly and
     # store the effect string so analytics can recover it)
-    sig.score_total = float(_get(sig, "score_total", 0.0)) + adj
+    sig.score_total = float(_get(sig, "score_total", 0.0) or 0.0) + adj
     sig.ai_effect   = effect

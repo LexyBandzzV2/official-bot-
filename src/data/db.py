@@ -27,6 +27,7 @@ try:
     from supabase import create_client, Client as SupabaseClient
     _SUPABASE_LIB = True
 except ImportError:
+    create_client = None  # type: ignore[assignment]
     _SUPABASE_LIB = False
     log.warning("supabase-py not installed — using SQLite only")
 
@@ -48,7 +49,7 @@ def _get_supabase() -> Optional[Any]:
         return _sb_client
     if _SUPABASE_LIB and SUPABASE_URL and SUPABASE_ANON_KEY:
         try:
-            _sb_client = create_client(SUPABASE_URL, SUPABASE_ANON_KEY)
+            _sb_client = create_client(SUPABASE_URL, SUPABASE_ANON_KEY)  # type: ignore[misc]
             log.info("Supabase connected: %s", SUPABASE_URL)
         except Exception as e:
             log.warning("Supabase connection failed (%s) — falling back to SQLite", e)
@@ -888,8 +889,6 @@ def _signal_row(sig: Any) -> dict:
         "timeframe_alignment_points":float(getattr(sig, "timeframe_alignment_points", 0.0)),
         "candle_quality_points":     float(getattr(sig, "candle_quality_points", 0.0)),
         "volatility_points":         float(getattr(sig, "volatility_points",    0.0)),
-        "ml_adjustment_points":      float(getattr(sig, "ml_adjustment_points", 0.0)),
-        "ml_effect":                 getattr(sig, "ml_effect",                  None),
         "ai_effect":                 getattr(sig, "ai_effect",                  None),
         # Phase 14: live-suitability audit
         "macro_regime":               getattr(sig, "macro_regime",               None),
@@ -1229,78 +1228,6 @@ def get_recent_signals(signal_type: str = "BUY", limit: int = 50) -> list[dict]:
     return [dict(r) for r in rows]
 
 
-def save_ml_features(trade_id: str, features: dict, outcome: float) -> None:
-    """Persist an ML training row.
-
-    ``features`` may be either:
-      - a list-like vector in canonical feature order, OR
-      - a dict with numeric string keys ("0","1",...) mapping to floats (legacy).
-    """
-    row = {
-        "trade_id": trade_id,
-        "features_json": json.dumps(features),
-        "outcome": float(outcome),
-        "feature_version": 1,
-        "created_at": datetime.utcnow().isoformat(),
-    }
-
-    with _sqlite_conn() as conn:
-        conn.execute(
-            "INSERT INTO ml_features (trade_id, features_json, outcome, feature_version, created_at) VALUES (?,?,?,?,?)",
-            (row["trade_id"], row["features_json"], row["outcome"], row["feature_version"], row["created_at"]),
-        )
-
-    sb = _get_supabase()
-    if sb:
-        try:
-            sb.table("ml_features").insert(row).execute()
-        except Exception as e:
-            log.warning("Supabase ml_features insert failed: %s", e)
-
-
-def save_ml_model_health(
-    *,
-    model_type: str,
-    is_loaded: bool,
-    avg_prediction_time_ms: float,
-    predictions_count: int,
-    errors_count: int,
-    last_error_message: str = "",
-    timestamp: Optional[str] = None,
-) -> None:
-    """Persist ML model health metrics (Supabase + SQLite)."""
-    ts = timestamp or datetime.utcnow().isoformat()
-    row = {
-        "timestamp": ts,
-        "model_type": model_type,
-        "is_loaded": int(bool(is_loaded)),
-        "avg_prediction_time_ms": float(avg_prediction_time_ms),
-        "predictions_count": int(predictions_count),
-        "errors_count": int(errors_count),
-        "last_error_message": last_error_message or "",
-        "created_at": datetime.utcnow().isoformat(),
-    }
-
-    with _sqlite_conn() as conn:
-        conn.execute(
-            """INSERT INTO ml_model_health
-               (timestamp, model_type, is_loaded, avg_prediction_time_ms, predictions_count, errors_count, last_error_message, created_at)
-               VALUES (?,?,?,?,?,?,?,?)""",
-            (
-                row["timestamp"], row["model_type"], row["is_loaded"],
-                row["avg_prediction_time_ms"], row["predictions_count"], row["errors_count"],
-                row["last_error_message"], row["created_at"],
-            ),
-        )
-
-    sb = _get_supabase()
-    if sb:
-        try:
-            sb.table("ml_model_health").insert(row).execute()
-        except Exception as e:
-            log.warning("Supabase ml_model_health insert failed: %s", e)
-
-
 def save_broker_routing_decision(
     *,
     trading_mode: str,
@@ -1384,14 +1311,6 @@ def save_broker_execution(
             sb.table("broker_executions").insert(row).execute()
         except Exception as e:
             log.warning("Supabase broker_executions insert failed: %s", e)
-
-
-def get_ml_training_data() -> list[dict]:
-    with _sqlite_conn() as conn:
-        rows = conn.execute(
-            "SELECT * FROM ml_features ORDER BY created_at DESC"
-        ).fetchall()
-    return [dict(r) for r in rows]
 
 
 # ── Proposal persistence (Phase 7) ───────────────────────────────────────────

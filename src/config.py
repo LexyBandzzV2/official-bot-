@@ -21,6 +21,7 @@ SQLITE_PATH:        str = os.getenv("SQLITE_PATH", "data/algobot.db")
 
 # ── Market Data APIs ──────────────────────────────────────────────────────────
 FINNHUB_API_KEY:    str = os.getenv("FINNHUB_API_KEY", "")
+POLYGON_API_KEY:    str = os.getenv("POLYGON_API_KEY", "")  # Polygon.io (api.massive.com)
 BINANCE_API_KEY:    str = os.getenv("BINANCE_API_KEY", "")
 BINANCE_SECRET:     str = os.getenv("BINANCE_SECRET", "")
 
@@ -98,6 +99,9 @@ PEAK_GIVEBACK_FRACTION: float = float(
     os.getenv("PEAK_GIVEBACK_FRACTION",
               os.getenv("TRAILING_TP_GIVEBACK", "0.35"))
 )  # fraction of max favorable move that must retrace before exit fires (0.35 = 35 %)
+PEAK_GIVEBACK_MIN_MFE_PCT: float = float(
+    os.getenv("PEAK_GIVEBACK_MIN_MFE_PCT", "0.001")
+)  # min favorable excursion (0.1%) before giveback can fire — prevents exit on noise
 
 # Deprecated aliases kept so any code that still reads the old names doesn't break.
 # Remove in a future release after all call-sites are updated to canonical names.
@@ -276,7 +280,7 @@ PREFILTER_ATR_MIN_INTERMEDIATE: float = float(os.getenv("PREFILTER_ATR_MIN_INTER
 PREFILTER_ATR_MIN_SWING:        float = float(os.getenv("PREFILTER_ATR_MIN_SWING",         "2.5"))
 
 # Volume expansion thresholds (multiples of 20-bar average)
-PREFILTER_VOLUME_EXPANSION_NORMAL: float = float(os.getenv("PREFILTER_VOLUME_EXPANSION_NORMAL", "1.5"))
+PREFILTER_VOLUME_EXPANSION_NORMAL: float = float(os.getenv("PREFILTER_VOLUME_EXPANSION_NORMAL", "0.70"))
 PREFILTER_VOLUME_EXPANSION_WEAK:   float = float(os.getenv("PREFILTER_VOLUME_EXPANSION_WEAK",   "1.0"))
 
 # Meme-coin lane stricter thresholds

@@ -12,7 +12,7 @@ from __future__ import annotations
 import logging
 import uuid
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Any, Optional
 
 log = logging.getLogger(__name__)
 
@@ -30,12 +30,12 @@ except ImportError:
 class OrderManager:
     """Manages order lifecycle from submission to close."""
 
-    def __init__(self, adapter: Optional[FPMarketsAdapter] = None) -> None:
+    def __init__(self, adapter: Any = None) -> None:
         # Map: internal trade_id → broker order/ticket info
         self._ticket_map: dict[str, dict] = {}
         self._adapter = adapter
 
-    def set_adapter(self, adapter: FPMarketsAdapter) -> None:
+    def set_adapter(self, adapter: Any) -> None:
         self._adapter = adapter
 
     # ── Order submission ───────────────────────────────────────────────────────
@@ -48,7 +48,7 @@ class OrderManager:
         expected_entry: float,
         stop_loss:      float,
         trade_id:       str,
-        take_profit:    float = None,
+        take_profit:    float | None = None,
         comment:        str = "AlgoBot",
     ) -> Optional[dict]:
         """Submit a market order and record the fill.

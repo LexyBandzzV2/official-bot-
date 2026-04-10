@@ -42,6 +42,7 @@ class PeakGiveback:
         direction: str,
         entry_price: float,
         giveback_frac: float,
+        min_mfe_pct: float = 0.001,
     ) -> None:
         self.direction = direction.lower()
         if self.direction not in ("buy", "sell"):
@@ -49,6 +50,12 @@ class PeakGiveback:
         self.entry_price = float(entry_price)
         self.giveback_frac = float(giveback_frac)
         self.peak_price = float(entry_price)
+        self.min_mfe_pct = float(min_mfe_pct)
+        # Pre-compute the minimum price the peak must reach before giveback can fire
+        if self.direction == "buy":
+            self._min_mfe_price = self.entry_price * (1.0 + self.min_mfe_pct)
+        else:
+            self._min_mfe_price = self.entry_price * (1.0 - self.min_mfe_pct)
 
     def update_bar(self, high: float, low: float) -> None:
         """Incorporate this bar's range into the running peak."""
@@ -66,9 +73,11 @@ class PeakGiveback:
     def is_triggered(self, close_price: float) -> bool:
         """True when close breaches the giveback line (only after meaningful favorable move)."""
         if self.direction == "buy":
-            if self.peak_price <= self.entry_price:
+            # Require peak to exceed entry by at least min_mfe_pct before giveback fires
+            if self.peak_price < self._min_mfe_price:
                 return False
             return float(close_price) <= self.trigger_level()
-        if self.peak_price >= self.entry_price:
+        # Sell (short): peak must fall below min_mfe_price before giveback fires
+        if self.peak_price > self._min_mfe_price:
             return False
         return float(close_price) >= self.trigger_level()

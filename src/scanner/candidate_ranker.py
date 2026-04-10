@@ -85,14 +85,14 @@ def score_symbol(
             # For downtrend: jaw > teeth > lips
             aligned = (lips > teeth > jaw) or (jaw > teeth > lips)
 
-        # Volume score (normalised over last 20 bars)
+        # Volume score — 3-bar recent average vs 20-bar median baseline
         vol_ratio = 0.0
         vol_score = 0.0
-        if "volume" in ha_df.columns:
-            last_vol = float(ha_df["volume"].iloc[-1])
-            avg_vol  = float(ha_df["volume"].tail(20).mean())
-            if avg_vol > 0:
-                vol_ratio = last_vol / avg_vol
+        if "volume" in ha_df.columns and len(ha_df) >= 20:
+            recent_vol  = float(ha_df["volume"].tail(3).mean())
+            baseline_vol = float(ha_df["volume"].tail(20).median())
+            if baseline_vol > 0:
+                vol_ratio = recent_vol / baseline_vol
                 vol_score = min(1.0, vol_ratio)
 
         return CandidateScore(

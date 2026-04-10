@@ -151,12 +151,19 @@ def log_rejection(
     asset:       str,
     timeframe:   str,
     reason:      str,
+    entry:       Optional[float] = None,
+    ai_conf:     Optional[float] = None,
 ) -> None:
     ts = datetime.now(_tz).strftime("%Y-%m-%d %I:%M:%S %p %Z")
     _sig_log.warning(
         "[%s] REJECTED | %s %s %s | Rejection reason: %s",
         ts, signal_type, asset, timeframe, reason,
     )
+    try:
+        from src.display.tables import print_rejected
+        print_rejected(signal_type, asset, timeframe, reason, entry=entry, ai_conf=ai_conf)
+    except Exception:
+        pass
 
 
 def log_trail_update(

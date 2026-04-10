@@ -57,6 +57,8 @@ class TradeCandidateLogger:
         # Add handler to logger
         if not self.candidate_logger.handlers:
             self.candidate_logger.addHandler(handler)
+        # Never let CANDIDATE / SUITABILITY lines bubble up to the root console handler
+        self.candidate_logger.propagate = False
         
         logger.info(f"TradeCandidateLogger initialized, logging to {log_file}")
     
