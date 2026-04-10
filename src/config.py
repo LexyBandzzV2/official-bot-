@@ -219,13 +219,17 @@ REGIME_SCORE_BIAS_HIGH_VOL:   float = float(os.getenv("REGIME_SCORE_BIAS_HIGH_VO
 REGIME_SCORE_BIAS_LOW_VOL:    float = float(os.getenv("REGIME_SCORE_BIAS_LOW_VOL",    "-2.0"))
 REGIME_SCORE_BIAS_UNCERTAIN:  float = float(os.getenv("REGIME_SCORE_BIAS_UNCERTAIN",  "0.0"))
 
-# Entry filter: enable/disable + minimum score per macro regime
+# Entry filter: enable/disable + minimum score per macro regime.
+# Lowered across the board — original values (50 in ranging, 45 in high-vol) were
+# blocking the majority of signals.  The signal engine's own confluence gates
+# (Alligator + Stochastic + candle quality) handle quality; regime score gates
+# should be a coarse "market condition" check, not a second full quality bar.
 REGIME_ENTRY_FILTER_ENABLED:  bool  = os.getenv("REGIME_ENTRY_FILTER_ENABLED", "true").lower() in ("1", "true", "yes")
-REGIME_ENTRY_MIN_SCORE_TRENDING:  float = float(os.getenv("REGIME_ENTRY_MIN_SCORE_TRENDING",  "30.0"))
-REGIME_ENTRY_MIN_SCORE_RANGING:   float = float(os.getenv("REGIME_ENTRY_MIN_SCORE_RANGING",   "50.0"))
-REGIME_ENTRY_MIN_SCORE_HIGH_VOL:  float = float(os.getenv("REGIME_ENTRY_MIN_SCORE_HIGH_VOL",  "45.0"))
-REGIME_ENTRY_MIN_SCORE_LOW_VOL:   float = float(os.getenv("REGIME_ENTRY_MIN_SCORE_LOW_VOL",   "40.0"))
-REGIME_ENTRY_MIN_SCORE_UNCERTAIN: float = float(os.getenv("REGIME_ENTRY_MIN_SCORE_UNCERTAIN", "35.0"))
+REGIME_ENTRY_MIN_SCORE_TRENDING:  float = float(os.getenv("REGIME_ENTRY_MIN_SCORE_TRENDING",  "20.0"))
+REGIME_ENTRY_MIN_SCORE_RANGING:   float = float(os.getenv("REGIME_ENTRY_MIN_SCORE_RANGING",   "35.0"))
+REGIME_ENTRY_MIN_SCORE_HIGH_VOL:  float = float(os.getenv("REGIME_ENTRY_MIN_SCORE_HIGH_VOL",  "30.0"))
+REGIME_ENTRY_MIN_SCORE_LOW_VOL:   float = float(os.getenv("REGIME_ENTRY_MIN_SCORE_LOW_VOL",   "25.0"))
+REGIME_ENTRY_MIN_SCORE_UNCERTAIN: float = float(os.getenv("REGIME_ENTRY_MIN_SCORE_UNCERTAIN", "22.0"))
 
 # Exit parameter multipliers per macro regime (applied to policy parameters)
 # giveback_frac multiplier (>1 = wider giveback = more room; <1 = tighter)
@@ -258,10 +262,10 @@ SUITABILITY_THRESHOLD_RAISE_ENABLED: bool = (
     os.getenv("SUITABILITY_THRESHOLD_RAISE_ENABLED", "true").lower() in ("1", "true", "yes")
 )
 SUITABILITY_MEDIUM_THRESHOLD_DELTA: float = float(
-    os.getenv("SUITABILITY_MEDIUM_THRESHOLD_DELTA", "5.0")
+    os.getenv("SUITABILITY_MEDIUM_THRESHOLD_DELTA", "3.0")   # was 5.0
 )
 SUITABILITY_LOW_THRESHOLD_DELTA: float = float(
-    os.getenv("SUITABILITY_LOW_THRESHOLD_DELTA", "10.0")
+    os.getenv("SUITABILITY_LOW_THRESHOLD_DELTA", "6.0")      # was 10.0
 )
 
 # Score penalty: subtract these many score-points from score_total for
@@ -270,10 +274,10 @@ SUITABILITY_SCORE_PENALTY_ENABLED: bool = (
     os.getenv("SUITABILITY_SCORE_PENALTY_ENABLED", "true").lower() in ("1", "true", "yes")
 )
 SUITABILITY_MEDIUM_SCORE_PENALTY: float = float(
-    os.getenv("SUITABILITY_MEDIUM_SCORE_PENALTY", "4.0")
+    os.getenv("SUITABILITY_MEDIUM_SCORE_PENALTY", "2.0")     # was 4.0
 )
 SUITABILITY_LOW_SCORE_PENALTY: float = float(
-    os.getenv("SUITABILITY_LOW_SCORE_PENALTY", "8.0")
+    os.getenv("SUITABILITY_LOW_SCORE_PENALTY", "5.0")        # was 8.0
 )
 
 # ── Final Sprint: Asset Universe & Prefilter Layer ────────────────────────────
@@ -295,22 +299,29 @@ UNIVERSE_MEME_COIN_LANE_ENABLED: bool = (
     os.getenv("UNIVERSE_MEME_COIN_LANE_ENABLED", "false").lower() in ("1", "true", "yes")
 )
 
-# ATR% minimum thresholds per strategy mode
-PREFILTER_ATR_MIN_SCALP:        float = float(os.getenv("PREFILTER_ATR_MIN_SCALP",        "1.5"))
-PREFILTER_ATR_MIN_INTERMEDIATE: float = float(os.getenv("PREFILTER_ATR_MIN_INTERMEDIATE",  "2.0"))
-PREFILTER_ATR_MIN_SWING:        float = float(os.getenv("PREFILTER_ATR_MIN_SWING",         "2.5"))
+# ATR% minimum thresholds per strategy mode.
+# Lowered from 1.5/2.0/2.5 — those values rejected most real setups on volatile assets.
+# These thresholds keep the gate meaningful while letting high-beta movers through.
+PREFILTER_ATR_MIN_SCALP:        float = float(os.getenv("PREFILTER_ATR_MIN_SCALP",        "0.8"))
+PREFILTER_ATR_MIN_INTERMEDIATE: float = float(os.getenv("PREFILTER_ATR_MIN_INTERMEDIATE",  "1.2"))
+PREFILTER_ATR_MIN_SWING:        float = float(os.getenv("PREFILTER_ATR_MIN_SWING",         "1.8"))
 
-# Volume expansion thresholds (multiples of 20-bar average)
-PREFILTER_VOLUME_EXPANSION_NORMAL: float = float(os.getenv("PREFILTER_VOLUME_EXPANSION_NORMAL", "1.5"))
-PREFILTER_VOLUME_EXPANSION_WEAK:   float = float(os.getenv("PREFILTER_VOLUME_EXPANSION_WEAK",   "1.0"))
+# Volume expansion thresholds (multiples of 20-bar average).
+# Lowered from 1.5/1.0 — crypto and high-beta stocks trade on thinner volume spikes;
+# 1.1x normal / 0.7x for strong-ATR symbols gives a meaningful filter without
+# over-rejecting real momentum setups.
+PREFILTER_VOLUME_EXPANSION_NORMAL: float = float(os.getenv("PREFILTER_VOLUME_EXPANSION_NORMAL", "1.1"))
+PREFILTER_VOLUME_EXPANSION_WEAK:   float = float(os.getenv("PREFILTER_VOLUME_EXPANSION_WEAK",   "0.7"))
 
 # Meme-coin lane stricter thresholds
 PREFILTER_MEME_ATR_MIN:          float = float(os.getenv("PREFILTER_MEME_ATR_MIN",          "3.0"))
 PREFILTER_MEME_VOLUME_MIN:       float = float(os.getenv("PREFILTER_MEME_VOLUME_MIN",       "2.0"))
 PREFILTER_MEME_AVG_VOLUME_FLOOR: float = float(os.getenv("PREFILTER_MEME_AVG_VOLUME_FLOOR", "100000"))
 
-# Top-N candidate cap (how many symbols survive into deep evaluation)
-PREFILTER_TOP_N: int = int(os.getenv("PREFILTER_TOP_N", "10"))
+# Top-N candidate cap (how many symbols survive into deep evaluation).
+# Raised from 10 — with 41 enabled symbols we need a wider funnel or we
+# regularly throw away valid setups that would have passed signal scoring.
+PREFILTER_TOP_N: int = int(os.getenv("PREFILTER_TOP_N", "25"))
 
 # Quality-first mode — when True, raises all ATR thresholds by 50%
 PREFILTER_QUALITY_FIRST: bool = (

@@ -143,68 +143,84 @@ class ExitPolicy:
 
 # ── Concrete policies ─────────────────────────────────────────────────────────
 
-# 3m / 5m scalp: let the move develop, lock in at achievable levels.
+# ── EXIT POLICY PHILOSOPHY ────────────────────────────────────────────────────
+# Target: 1–20% profit per trade on volatile assets (crypto, MSTR, SOXL, etc.)
+#
+# Root-cause of 0.05% exits (the bug we're fixing):
+#   Old Stage 1 was (reach +0.50% → lock +0.15%).  With giveback_frac=0.45,
+#   the giveback trigger fired at entry+0.275%, and the profit lock floor was
+#   entry+0.15%.  Either way the trade closed at <0.30% — netting ~0.05% after fees.
+#
+# Fix: stages are now set to multiples of real high-beta daily ranges (1–15%).
+#   • break_even_pct raised so we don't arm the floor on tiny noise
+#   • Stage 1 triggers at meaningful profit levels (1.5–4%) not 0.50%
+#   • giveback_frac kept at 0.40 — lets 60% of the move develop before exit
+#   • min_mfe_pct raised in proportion to the new stage levels
+# ─────────────────────────────────────────────────────────────────────────────
+
+# 3m / 5m scalp: target 1–6% moves; trail with ATR after stage 2.
 ScalpExitPolicy = ExitPolicy(
     name               = "SCALP",
-    giveback_frac      = 0.45,   # was 0.25 — wider breathing room for 3m/5m noise
-    break_even_pct     = 0.25,   # arm break-even at +0.25% (sooner protection)
-    min_mfe_pct        = 0.004,  # giveback can't fire until peak is +0.4% from entry
+    giveback_frac      = 0.40,   # allow 60% of move to develop (was 0.45)
+    break_even_pct     = 0.60,   # arm break-even at +0.60% — avoids arming on noise
+    min_mfe_pct        = 0.008,  # peak must reach +0.8% before giveback can fire
     profit_lock_stages = [
-        (0.50, 0.15),   # Stage 1: reach +0.50% → lock +0.15% above entry
-        (1.00, 0.50),   # Stage 2: reach +1.00% → lock +0.50% above entry | ATR eligible
-        (2.00, 1.00),   # Stage 3: reach +2.00% → lock +1.00% above entry
+        (1.50, 0.50),   # Stage 1: reach +1.50% → lock +0.50% above entry
+        (3.00, 1.50),   # Stage 2: reach +3.00% → lock +1.50% | ATR trail eligible
+        (6.00, 3.00),   # Stage 3: reach +6.00% → lock +3.00%
     ],
     trail_mode               = "atr",
-    atr_multiplier           = 1.2,  # tighter ATR trail (was 1.5) to hold gains longer
+    atr_multiplier           = 1.2,
     atr_eligible_after_stage = 2,
     momentum_fade_window     = 3,
     fade_confirmation_bars   = 2,
     fade_tighten_frac        = 0.30,
 )
 
-# 1m micro-scalp: enough room so normal 1m candle noise doesn't trigger exit,
-# but locks in protection once a real move materialises.
+# 1m micro-scalp: faster timeframe — tighter stages but still targeting real moves.
 ScalpMicroExitPolicy = ExitPolicy(
     name               = "SCALP_1M",
-    giveback_frac      = 0.50,   # was 0.25 — allow 50% pullback before exiting
-    break_even_pct     = 0.30,   # was 0.80 — protect entry at +0.30% (sooner)
-    min_mfe_pct        = 0.003,  # giveback can't fire until peak is +0.3% from entry
+    giveback_frac      = 0.40,   # allow 60% of move before exit
+    break_even_pct     = 0.40,   # arm break-even at +0.40%
+    min_mfe_pct        = 0.005,  # peak must reach +0.5% before giveback can fire
     profit_lock_stages = [
-        (0.50, 0.15),   # Stage 1: reach +0.50% → lock +0.15%
-        (1.00, 0.50),   # Stage 2: reach +1.00% → lock +0.50% | ATR trail eligible
-        (2.00, 1.00),   # Stage 3: reach +2.00% → lock +1.00%
+        (0.75, 0.25),   # Stage 1: reach +0.75% → lock +0.25%
+        (1.50, 0.75),   # Stage 2: reach +1.50% → lock +0.75% | ATR trail eligible
+        (3.00, 1.50),   # Stage 3: reach +3.00% → lock +1.50%
     ],
     trail_mode               = "atr",
-    atr_multiplier           = 1.2,  # was 1.5 — tighter trail to capture 1m moves
+    atr_multiplier           = 1.2,
     atr_eligible_after_stage = 2,
     momentum_fade_window     = 3,
     fade_confirmation_bars   = 2,
     fade_tighten_frac        = 0.30,
 )
 
+# 15m / 1h intermediate: target 2–8% moves; candle trail keeps momentum alive.
 IntermediateExitPolicy = ExitPolicy(
     name               = "INTERMEDIATE",
-    giveback_frac      = 0.45,   # was 0.35 — give 15m/1h trades more room to run
-    break_even_pct     = 0.50,   # was 0.60 — protect entry slightly sooner
-    min_mfe_pct        = 0.005,  # giveback can't fire until peak is +0.5% from entry
+    giveback_frac      = 0.40,   # allow 60% retracement before exit
+    break_even_pct     = 1.00,   # arm break-even at +1.00%
+    min_mfe_pct        = 0.012,  # peak must reach +1.2% before giveback fires
     profit_lock_stages = [
-        (0.75, 0.25),   # Stage 1: reach +0.75% → lock +0.25%
-        (1.50, 0.75),   # Stage 2: reach +1.50% → lock +0.75%
-        (3.00, 1.50),   # Stage 3: reach +3.00% → lock +1.50%
+        (2.00, 0.75),   # Stage 1: reach +2.00% → lock +0.75%
+        (4.00, 2.00),   # Stage 2: reach +4.00% → lock +2.00%
+        (8.00, 4.00),   # Stage 3: reach +8.00% → lock +4.00%
     ],
     trail_mode           = "candle",
     momentum_fade_window = 3,
 )
 
+# 2h / 4h swing: target 5–20% moves; wide room to run full trend.
 SwingExitPolicy = ExitPolicy(
     name               = "SWING",
-    giveback_frac      = 0.50,
-    break_even_pct     = 1.00,
-    min_mfe_pct        = 0.008,  # giveback can't fire until peak is +0.8% from entry
+    giveback_frac      = 0.38,   # allow 62% of move; trail tightly once locked
+    break_even_pct     = 1.50,   # arm break-even at +1.50%
+    min_mfe_pct        = 0.018,  # peak must reach +1.8% before giveback fires
     profit_lock_stages = [
-        (2.00, 0.75),   # Stage 1: reach +2.00% → lock +0.75%
-        (4.00, 2.00),   # Stage 2: reach +4.00% → lock +2.00%
-        (7.00, 3.50),   # Stage 3: reach +7.00% → lock +3.50%
+        (4.00, 1.50),   # Stage 1: reach +4.00% → lock +1.50%
+        (8.00, 4.00),   # Stage 2: reach +8.00% → lock +4.00%
+        (15.00, 8.00),  # Stage 3: reach +15.00% → lock +8.00%
     ],
     trail_mode           = "candle",
     momentum_fade_window = 0,   # disabled — too noisy on higher timeframes
