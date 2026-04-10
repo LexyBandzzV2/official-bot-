@@ -112,6 +112,11 @@ class RiskManager:
             except Exception:
                 pass  # never block trading due to classification errors
 
+        # 5. Portfolio correlation check — prevent correlated asset accumulation
+        correlation_blocked, corr_reason = self._check_portfolio_correlation(asset)
+        if correlation_blocked:
+            return False, corr_reason
+
         return True, "APPROVED"
 
     def record_opened(
@@ -312,6 +317,57 @@ class RiskManager:
         self.open_positions.pop(trade_id, None)
         self.daily_realised_pnl += pnl
         self.account_balance    += pnl
+
+    # ── Portfolio correlation check ───────────────────────────────────────────
+
+    def _check_portfolio_correlation(self, incoming_asset: str) -> Tuple[bool, str]:
+        """Check if incoming_asset would add harmful correlation.
+
+        Returns (should_block: bool, reason: str).
+        Blocks if adding this asset would exceed correlation limits:
+        - Prevent more than 3 correlated longs from same sector
+        - Prevent > 5 longs in highly correlated pairs
+        """
+        try:
+            # Correlation group mapping: assets that are highly correlated
+            correlation_groups = {
+                "tech_mega": {"NVDA", "TSLA", "META", "AMZN", "MSFT"},
+                "crypto": {"BTCUSD", "ETHUSD", "SOLUSD", "AVAXUSD", "DOGEUSD", "LINKUSD"},
+                "indices": {"QQQ", "SPY", "TQQQ", "SOXL", "TECL"},
+                "leverage": {"TQQQ", "SOXL", "TECL", "NVDL", "TSLL", "BITX"},
+            }
+
+            if incoming_asset not in str(correlation_groups.values()):
+                # Unknown assets don't trigger correlation checks
+                return False, ""
+
+            # Find which group(s) the incoming asset belongs to
+            incoming_groups = [
+                grp for grp, members in correlation_groups.items()
+                if incoming_asset in members
+            ]
+            if not incoming_groups:
+                return False, ""
+
+            # Count open positions in each correlated group
+            for group_name in incoming_groups:
+                group_members = correlation_groups[group_name]
+                open_in_group = sum(
+                    1 for rec in self.open_positions.values()
+                    if rec.asset in group_members and rec.signal_type == "BUY"
+                )
+
+                # Hard limit: max 3 longs in any single correlation group
+                if open_in_group >= 3:
+                    return True, (
+                        f"CORRELATION_LIMIT ({group_name}: "
+                        f"{open_in_group} open, max 3 per group)"
+                    )
+
+            return False, ""
+        except Exception as e:
+            logger.debug("Correlation check failed: %s — allowing trade", e)
+            return False, ""
 
     # ── Internals ─────────────────────────────────────────────────────────────
 

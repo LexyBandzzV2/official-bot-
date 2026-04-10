@@ -33,6 +33,39 @@ def _cfg(attr: str, default: Any = None) -> Any:
         return default
 
 
+# ── Per-asset regime bias overrides ────────────────────────────────────────────
+
+_ASSET_REGIME_OVERRIDES = {
+    # Crypto: prefer tighter thresholds in HIGH_VOL (high-volatility assets)
+    "BTCUSD": {"HIGH_VOL": {"REGIME_ENTRY_MIN_SCORE_HIGH_VOL": 55.0}},
+    "ETHUSD": {"HIGH_VOL": {"REGIME_ENTRY_MIN_SCORE_HIGH_VOL": 55.0}},
+    "SOLUSD": {"HIGH_VOL": {"REGIME_ENTRY_MIN_SCORE_HIGH_VOL": 60.0}},
+    "AVAXUSD": {"HIGH_VOL": {"REGIME_ENTRY_MIN_SCORE_HIGH_VOL": 58.0}},
+
+    # High-beta stocks: prefer higher thresholds during RANGING
+    "NVDA": {"RANGING": {"REGIME_ENTRY_MIN_SCORE_RANGING": 60.0}},
+    "TSLA": {"RANGING": {"REGIME_ENTRY_MIN_SCORE_RANGING": 60.0}},
+    "META": {"RANGING": {"REGIME_ENTRY_MIN_SCORE_RANGING": 58.0}},
+
+    # Tech ETFs: relax in TRENDING
+    "QQQ": {"TRENDING": {"REGIME_ENTRY_MIN_SCORE_TRENDING": 25.0}},
+    "TQQQ": {"TRENDING": {"REGIME_ENTRY_MIN_SCORE_TRENDING": 25.0}},
+}
+
+
+def get_asset_regime_override(asset: str, regime: str, param: str) -> Optional[float]:
+    """Return asset-specific regime override for a parameter, or None."""
+    try:
+        overrides = _ASSET_REGIME_OVERRIDES.get(asset)
+        if overrides:
+            regime_overrides = overrides.get(regime)
+            if regime_overrides:
+                return regime_overrides.get(param)
+    except Exception:
+        pass
+    return None
+
+
 # ── Macro-regime helpers ──────────────────────────────────────────────────────
 
 def _get_macro_labels(ctx: Any) -> frozenset:
@@ -125,6 +158,8 @@ def check_regime_entry_filter(
     Returns (allowed, reason).  When the filter is disabled or context is
     absent, returns (True, "").
 
+    Applies per-asset regime overrides if available.
+
     Parameters
     ----------
     extra_threshold_delta :
@@ -142,6 +177,7 @@ def check_regime_entry_filter(
 
         macros = _get_macro_labels(regime_ctx)
         score = float(getattr(sig, "score_total", 0.0))
+        asset = str(getattr(sig, "asset", ""))
 
         _min_score_map = {
             MacroRegime.TRENDING:  float(_cfg("REGIME_ENTRY_MIN_SCORE_TRENDING",  30.0)),
@@ -155,7 +191,10 @@ def check_regime_entry_filter(
         effective_min = 0.0
         governing_facet = ""
         for macro in macros:
-            threshold = _min_score_map.get(macro, 0.0)
+            param_key = f"REGIME_ENTRY_MIN_SCORE_{macro.value}"
+            # Check for per-asset override first
+            override_val = get_asset_regime_override(asset, macro.value, param_key)
+            threshold = override_val if override_val is not None else _min_score_map.get(macro, 0.0)
             if threshold > effective_min:
                 effective_min = threshold
                 governing_facet = macro.value

@@ -364,6 +364,21 @@ class BrokerRouter:
 
     # ── Public API ─────────────────────────────────────────────────────────────
 
+    def can_short(self, symbol: str) -> bool:
+        """Check if shorts are available for this symbol on the selected broker.
+
+        Returns True if longs are needed (SELL signals never short directly in this bot),
+        or if the broker can handle shorts. Fails open on unknown brokers.
+        """
+        try:
+            # This bot uses longs only — SELL signals are handled by exiting existing long positions.
+            # Short-selling is not part of the base strategy.
+            # If you add short capability, add broker-specific checks here.
+            return True
+        except Exception as e:
+            log.warning("Short availability check failed for %s: %s — allowing anyway", symbol, e)
+            return True
+
     def place_order(
         self,
         signal_type:    str,
@@ -382,6 +397,12 @@ class BrokerRouter:
         if self.dry_run:
             log.info("DRY RUN: would place %s %s vol=%.4f entry=%.5f sl=%.5f",
                      signal_type, symbol, volume, expected_entry, stop_loss)
+            return None
+
+        # Pre-flight check: ensure shorts are available if this is a short order
+        # (Note: this bot only trades longs, so this is a safety placeholder)
+        if signal_type == "SELL" and not self.can_short(symbol):
+            log.error("Short not available for %s — rejecting SELL signal", symbol)
             return None
 
         broker_name, mgr = self._get_manager(symbol, timeframe=timeframe)

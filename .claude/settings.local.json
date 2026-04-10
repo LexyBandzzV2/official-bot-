@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(wc -l /c/Users/admin/Desktop/'Offical Bot'/.claude/worktrees/focused-easley/src/**/*.py)"
+    ]
+  }
+}

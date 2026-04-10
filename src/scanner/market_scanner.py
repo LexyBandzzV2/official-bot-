@@ -292,6 +292,12 @@ class MarketScanner:
         except Exception:
             pass
 
+        # Opportunistic regime learning (never blocks scanning)
+        try:
+            self._check_regime_learning()
+        except Exception as e:
+            log.debug("Regime learning check failed: %s", e)
+
         # Step 1: Fetch + convert HA for all symbols
         ha_data: dict[str, object] = {}  # symbol → ha_df
         _tf_mins: dict[str, int] = {
@@ -412,6 +418,54 @@ class MarketScanner:
                 self._evaluate_symbol(sym, ha_df)
             except Exception as e:
                 log.error("Signal eval failed for %s: %s", sym, e)
+
+    def _check_regime_learning(self) -> None:
+        """Periodic regime learning check — generates regime improvement proposals.
+
+        This is opportunistic and never blocks scanning. Proposals are logged but
+        not automatically applied; they provide advisory insights for tuning.
+        """
+        try:
+            from src.tools.regime_learning import (
+                generate_regime_suggestions,
+                compute_regime_performance,
+            )
+            from datetime import datetime, timezone
+
+            # Check every 100 scans (roughly hourly on 1h timeframe)
+            if not hasattr(self, "_regime_learning_check_count"):
+                self._regime_learning_check_count = 0
+            self._regime_learning_check_count += 1
+
+            if self._regime_learning_check_count < 100:
+                return
+
+            self._regime_learning_check_count = 0
+
+            # Generate regime performance report (read-only, no side effects)
+            perf = compute_regime_performance(limit=5000)
+            total_trades = perf.get("total_trades", 0)
+
+            if total_trades < 20:
+                log.debug("Regime learning: insufficient trades (%d < 20)", total_trades)
+                return
+
+            # Generate improvement suggestions
+            suggestions = generate_regime_suggestions(limit=5000)
+            if suggestions:
+                log.info(
+                    "Regime learning: %d improvement suggestions generated from %d trades",
+                    len(suggestions), total_trades
+                )
+                for sugg in suggestions[:5]:  # Log top 5
+                    log.info(
+                        "  [%s] %s: %s",
+                        sugg.get("macro_regime", "?"),
+                        sugg.get("strategy_mode", "?"),
+                        sugg.get("reason", "")[:100]
+                    )
+        except Exception:
+            pass  # Never block scanning due to regime learning
 
     def _evaluate_symbol(self, sym: str, ha_df: pd.DataFrame) -> None:
         engine = self._get_engine(sym)
