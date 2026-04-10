@@ -44,6 +44,23 @@ ASSET_CATALOGUE: Dict[str, dict] = {
     "INJUSD":  {"class": "crypto",     "ccxt": "INJ/USDT",          "yf": "INJ-USD",    "display": "INJ/USD"},
     "ARBUSD":  {"class": "crypto",     "ccxt": "ARB/USDT",          "yf": "ARB-USD",    "display": "ARB/USD"},
     "APTUSD":  {"class": "crypto",     "ccxt": "APT/USDT",          "yf": "APT-USD",    "display": "APT/USD"},
+    # High-volatility alt-coin additions — frequent 10-20% daily moves
+    "SUIUSD":  {"class": "crypto",     "ccxt": "SUI/USDT",          "yf": "SUI-USD",    "display": "SUI/USD"},
+    "SEIUSD":  {"class": "crypto",     "ccxt": "SEI/USDT",          "yf": "SEI-USD",    "display": "SEI/USD"},
+    "NEARUSD": {"class": "crypto",     "ccxt": "NEAR/USDT",         "yf": "NEAR-USD",   "display": "NEAR/USD"},
+    "OPUSD":   {"class": "crypto",     "ccxt": "OP/USDT",           "yf": "OP-USD",     "display": "OP/USD"},
+    "TIAUSD":  {"class": "crypto",     "ccxt": "TIA/USDT",          "yf": "TIA-USD",    "display": "TIA/USD"},
+    "FETUSD":  {"class": "crypto",     "ccxt": "FET/USDT",          "yf": "FET-USD",    "display": "FET/USD"},
+    "RNDRUSD": {"class": "crypto",     "ccxt": "RNDR/USDT",         "yf": "RNDR-USD",   "display": "RNDR/USD"},
+    "JUPUSD":  {"class": "crypto",     "ccxt": "JUP/USDT",          "yf": "JUP-USD",    "display": "JUP/USD"},
+    # Meme coin lane
+    "SHIBUSD": {"class": "crypto",     "ccxt": "SHIB/USDT",         "yf": "SHIB-USD",   "display": "SHIB/USD"},
+    "PEPEUSD": {"class": "crypto",     "ccxt": "PEPE/USDT",         "yf": "PEPE-USD",   "display": "PEPE/USD"},
+    "FLOKIUSD":{"class": "crypto",     "ccxt": "FLOKI/USDT",        "yf": "FLOKI-USD",  "display": "FLOKI/USD"},
+    "WIFUSD":  {"class": "crypto",     "ccxt": "WIF/USDT",          "yf": "WIF-USD",    "display": "WIF/USD"},
+    "BONKUSD": {"class": "crypto",     "ccxt": "BONK/USDT",         "yf": "BONK-USD",   "display": "BONK/USD"},
+    "MEMEUSD": {"class": "crypto",     "ccxt": "MEME/USDT",         "yf": "MEME-USD",   "display": "MEME/USD"},
+    "TURBOUSD":{"class": "crypto",     "ccxt": "TURBO/USDT",        "yf": "TURBO-USD",  "display": "TURBO/USD"},
 
     # Commodities
     "XAUUSD":  {"class": "commodity",  "finnhub": "OANDA:XAU_USD",  "yf": "GC=F",       "display": "Gold"},
@@ -71,13 +88,25 @@ ASSET_CATALOGUE: Dict[str, dict] = {
     "AMZN":    {"class": "stock",      "finnhub": "AMZN",           "yf": "AMZN",       "display": "Amazon"},
     "NFLX":    {"class": "stock",      "finnhub": "NFLX",           "yf": "NFLX",       "display": "Netflix"},
     "SMCI":    {"class": "stock",      "finnhub": "SMCI",           "yf": "SMCI",       "display": "Super Micro Computer"},
+    # High-beta momentum additions — regular 5-15% daily movers
+    "MSTR":    {"class": "stock",      "finnhub": "MSTR",           "yf": "MSTR",       "display": "MicroStrategy"},
+    "COIN":    {"class": "stock",      "finnhub": "COIN",           "yf": "COIN",       "display": "Coinbase"},
+    "MARA":    {"class": "stock",      "finnhub": "MARA",           "yf": "MARA",       "display": "MARA Holdings"},
+    "RIOT":    {"class": "stock",      "finnhub": "RIOT",           "yf": "RIOT",       "display": "Riot Platforms"},
+    "PLTR":    {"class": "stock",      "finnhub": "PLTR",           "yf": "PLTR",       "display": "Palantir"},
+    "HOOD":    {"class": "stock",      "finnhub": "HOOD",           "yf": "HOOD",       "display": "Robinhood"},
+    # Index ETFs
     "QQQ":     {"class": "stock",      "finnhub": "QQQ",            "yf": "QQQ",        "display": "Invesco QQQ Trust"},
     "SPY":     {"class": "stock",      "finnhub": "SPY",            "yf": "SPY",        "display": "SPDR S&P 500 ETF"},
-    "TQQQ":    {"class": "stock",      "finnhub": "TQQQ",           "yf": "TQQQ",       "display": "ProShares UltraPro QQQ"},
+    # Leveraged / high-beta ETFs
+    "TQQQ":    {"class": "stock",      "finnhub": "TQQQ",           "yf": "TQQQ",       "display": "ProShares UltraPro QQQ 3X"},
     "SOXL":    {"class": "stock",      "finnhub": "SOXL",           "yf": "SOXL",       "display": "Direxion Daily Semiconductor Bull 3X"},
     "TECL":    {"class": "stock",      "finnhub": "TECL",           "yf": "TECL",       "display": "Direxion Daily Technology Bull 3X"},
     "HIBL":    {"class": "stock",      "finnhub": "HIBL",           "yf": "HIBL",       "display": "Direxion Daily S&P 500 High Beta Bull 3X"},
     "LABU":    {"class": "stock",      "finnhub": "LABU",           "yf": "LABU",       "display": "Direxion Daily S&P Biotech Bull 3X"},
+    "NVDL":    {"class": "stock",      "finnhub": "NVDL",           "yf": "NVDL",       "display": "GraniteShares 2x Long NVDA"},
+    "TSLL":    {"class": "stock",      "finnhub": "TSLL",           "yf": "TSLL",       "display": "Direxion Daily TSLA Bull 2X"},
+    "BITX":    {"class": "stock",      "finnhub": "BITX",           "yf": "BITX",       "display": "2x Bitcoin Strategy ETF"},
 }
 
 # ── Timeframe mapping ─────────────────────────────────────────────────────────

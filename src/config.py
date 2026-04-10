@@ -289,7 +289,7 @@ UNIVERSE_CORE_INDEX_MOMENTUM_ENABLED: bool = (
     os.getenv("UNIVERSE_CORE_INDEX_MOMENTUM_ENABLED", "true").lower() in ("1", "true", "yes")
 )
 UNIVERSE_HIGH_BETA_ETFS_ENABLED: bool = (
-    os.getenv("UNIVERSE_HIGH_BETA_ETFS_ENABLED", "false").lower() in ("1", "true", "yes")
+    os.getenv("UNIVERSE_HIGH_BETA_ETFS_ENABLED", "true").lower() in ("1", "true", "yes")
 )
 UNIVERSE_MEME_COIN_LANE_ENABLED: bool = (
     os.getenv("UNIVERSE_MEME_COIN_LANE_ENABLED", "false").lower() in ("1", "true", "yes")

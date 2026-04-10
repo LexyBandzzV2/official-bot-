@@ -2,11 +2,14 @@
 lookup helpers used by the prefilter layer.
 
 Universe groups (aligned to user's tiered Core 20 structure):
-    CORE_CRYPTO          — Tier 1: core crypto momentum (BTC, ETH, SOL, AVAX, …)
-    CORE_MOMENTUM_STOCKS — Tier 2: US momentum equities (NVDA, TSLA, AMD, …)
-    CORE_INDEX_MOMENTUM  — Tier 3: index ETFs for clean trend structure (QQQ, SPY)
-    HIGH_BETA_ETFS       — Tier 4: leveraged / high-beta ETFs (TQQQ, SOXL, TECL, …)
+    CORE_CRYPTO          — Tier 1: core crypto momentum (BTC, ETH, SOL, AVAX, SUI, …)
+    CORE_MOMENTUM_STOCKS — Tier 2: US high-beta equities (NVDA, TSLA, MSTR, COIN, …)
+    CORE_INDEX_MOMENTUM  — Tier 3: index ETFs for trend reference (QQQ, SPY)
+    HIGH_BETA_ETFS       — Tier 4: leveraged ETFs (TQQQ, SOXL, NVDL, TSLL, BITX, …)
     MEME_COIN_LANE       — Stricter lane: meme / micro-cap crypto (not part of Core 20)
+
+All symbol keys use canonical no-slash format matching symbol_mapper.ASSET_CATALOGUE
+(e.g. ``BTCUSD`` not ``BTC/USD``) so that filter_to_universe() resolves correctly.
 
 Each group carries:
     • a default enable/disable flag (overridable via env/config)
@@ -57,31 +60,45 @@ class AssetEntry:
 # ── Static registry ──────────────────────────────────────────────────────────
 
 # Tier 1 — Core crypto momentum universe (24/7 hunting ground)
-# DOGE is treated as core momentum (not meme lane) due to its liquidity.
+# Keys use canonical no-slash format (matching symbol_mapper.ASSET_CATALOGUE).
+# DOGE treated as core momentum (not meme lane) due to liquidity.
+# Added volatile alts (SUI, SEI, NEAR, OP, TIA, FET, RNDR, JUP) that regularly
+# print 10-20% daily candles and have sufficient Kraken/Coinbase liquidity.
 _CORE_CRYPTO_SYMBOLS: list[str] = [
-    "BTC/USD", "ETH/USD", "SOL/USD", "AVAX/USD", "LINK/USD",
-    "DOGE/USD", "BNB/USD", "INJ/USD", "ARB/USD", "APT/USD",
+    "BTCUSD", "ETHUSD", "SOLUSD", "AVAXUSD", "LINKUSD",
+    "DOGEUSD", "BNBUSD", "INJUSD", "ARBUSD", "APTUSD",
+    # High-volatility alts — frequent 10-20% moves
+    "SUIUSD", "SEIUSD", "NEARUSD", "OPUSD",
+    "TIAUSD", "FETUSD", "RNDRUSD", "JUPUSD",
 ]
 
 # Tier 2 — Core US momentum stocks (clean directional expansion)
+# Added high-beta names: MSTR (BTC proxy), COIN/MARA/RIOT (crypto equity),
+# PLTR (gov-AI momentum), HOOD (retail flow). All regularly move 5-15% daily.
 _CORE_MOMENTUM_STOCKS: list[str] = [
     "NVDA", "TSLA", "AMD", "META", "AMZN", "NFLX", "SMCI",
+    # High-beta additions
+    "MSTR", "COIN", "MARA", "RIOT", "PLTR", "HOOD",
 ]
 
-# Tier 3 — Index / index-style momentum (cleaner trend structure)
+# Tier 3 — Index ETFs (clean trend structure reference only)
+# TQQQ moved out — it's a 3x leveraged ETF, belongs in HIGH_BETA_ETFS.
 _CORE_INDEX_MOMENTUM: list[str] = [
-    "QQQ", "SPY", "TQQQ",
+    "QQQ", "SPY",
 ]
 
-# Tier 4 — High-beta / leveraged ETFs (enable after bot is behaving well)
+# Tier 4 — High-beta / leveraged ETFs (now enabled by default — bot is tuned)
+# TQQQ moved here from Tier 3 where it didn't belong.
+# NVDL (2x NVDA), TSLL (2x TSLA), BITX (2x BTC) add leveraged single-stock exposure.
 _HIGH_BETA_ETFS: list[str] = [
-    "SOXL", "TECL", "HIBL", "LABU",
+    "TQQQ", "SOXL", "TECL", "HIBL", "LABU",
+    "NVDL", "TSLL", "BITX",
 ]
 
 # Meme coin lane — stricter ATR + volume + liquidity gates (not part of Core 20)
 _MEME_COIN_LANE: list[str] = [
-    "SHIB/USD", "PEPE/USD", "FLOKI/USD", "WIF/USD",
-    "BONK/USD", "MEME/USD", "TURBO/USD",
+    "SHIBUSD", "PEPEUSD", "FLOKIUSD", "WIFUSD",
+    "BONKUSD", "MEMEUSD", "TURBOUSD",
 ]
 
 
