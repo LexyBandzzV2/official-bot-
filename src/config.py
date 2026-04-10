@@ -99,10 +99,35 @@ PEAK_GIVEBACK_FRACTION: float = float(
               os.getenv("TRAILING_TP_GIVEBACK", "0.35"))
 )  # fraction of max favorable move that must retrace before exit fires (0.35 = 35 %)
 
+# Minimum favorable excursion (% of entry price) required before the peak-giveback
+# exit is allowed to fire.  Prevents the exit from closing a trade at a loss when
+# the favorable move was trivially small (e.g. a doji that barely nudged past entry).
+# 0.5 % means the peak must reach at least entry × 1.005 (long) before giveback fires.
+PEAK_GIVEBACK_MIN_MFE_PCT: float = float(os.getenv("PEAK_GIVEBACK_MIN_MFE_PCT", "0.005"))
+
 # Deprecated aliases kept so any code that still reads the old names doesn't break.
 # Remove in a future release after all call-sites are updated to canonical names.
 TRAILING_TP_ENABLED:  bool  = PEAK_GIVEBACK_ENABLED
 TRAILING_TP_GIVEBACK: float = PEAK_GIVEBACK_FRACTION
+
+# ── Partial exit — lock in profit by closing a portion of the position ────────
+# When enabled, closes PARTIAL_EXIT_PCT of the position once unrealized profit
+# reaches PARTIAL_EXIT_MIN_PROFIT_PCT.  The remainder is trailed normally.
+PARTIAL_EXIT_ENABLED:          bool  = (
+    os.getenv("PARTIAL_EXIT_ENABLED", "true").lower() in ("1", "true", "yes")
+)
+PARTIAL_EXIT_PCT:              float = float(os.getenv("PARTIAL_EXIT_PCT",              "0.50"))  # close 50 % of position
+PARTIAL_EXIT_MIN_PROFIT_PCT:   float = float(os.getenv("PARTIAL_EXIT_MIN_PROFIT_PCT",   "2.0"))   # trigger at +2 % unrealized
+
+# ── Portfolio concentration guard ─────────────────────────────────────────────
+# Maximum number of simultaneously open positions within the same asset class.
+# Prevents holding 10 correlated crypto longs at the same time.
+MAX_POSITIONS_PER_CLASS: int = int(os.getenv("MAX_POSITIONS_PER_CLASS", "4"))
+
+# ── Data freshness guard ───────────────────────────────────────────────────────
+# A candle is considered stale when its age exceeds DATA_FRESHNESS_MULTIPLIER × bar_interval.
+# Set to 0 to disable the freshness check entirely.
+DATA_FRESHNESS_MULTIPLIER: float = float(os.getenv("DATA_FRESHNESS_MULTIPLIER", "3.0"))
 
 # ── Phase 4: mode-specific exit intelligence ──────────────────────────────────
 # ATR trail (SCALP only, eligible after stage-2 lock)

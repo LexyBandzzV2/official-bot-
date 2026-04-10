@@ -1,9 +1,10 @@
 """Risk Manager — enforces all trading rules before any order is placed.
 
 Rules enforced (in check order):
-    1. Daily kill switch  : if daily drawdown ≥ 10 %, block all new signals
-    2. Hourly trade limit : max 15 trades per clock hour
-    3. Duplicate guard    : same asset cannot have two open positions
+    1. Daily kill switch       : if daily drawdown ≥ 10 %, block all new signals
+    2. Hourly trade limit      : max 15 trades per clock hour
+    3. Duplicate guard         : same asset cannot have two open positions
+    4. Portfolio concentration : max N open positions within the same asset class
 
 All rule violations are logged with a reason code so every rejection
 appears in the trade log for research.
@@ -28,19 +29,21 @@ class RiskManager:
 
     def __init__(
         self,
-        account_balance:     float = 10_000.0,
-        max_risk_per_trade:  float = 0.01,   # 1 %
-        stop_loss_pct:       float = 0.02,   # 2 %
-        max_daily_drawdown:  float = 0.10,   # 10 %
-        max_trades_per_hour: int   = 15,
+        account_balance:       float = 10_000.0,
+        max_risk_per_trade:    float = 0.01,   # 1 %
+        stop_loss_pct:         float = 0.02,   # 2 %
+        max_daily_drawdown:    float = 0.10,   # 10 %
+        max_trades_per_hour:   int   = 15,
+        max_positions_per_class: int = 4,      # portfolio concentration cap
     ) -> None:
 
-        self._bal_at_open         = account_balance
-        self.account_balance      = account_balance
-        self.max_risk_per_trade   = max_risk_per_trade
-        self.stop_loss_pct        = stop_loss_pct
-        self.max_daily_drawdown   = max_daily_drawdown
-        self.max_trades_per_hour  = max_trades_per_hour
+        self._bal_at_open             = account_balance
+        self.account_balance          = account_balance
+        self.max_risk_per_trade       = max_risk_per_trade
+        self.stop_loss_pct            = stop_loss_pct
+        self.max_daily_drawdown       = max_daily_drawdown
+        self.max_trades_per_hour      = max_trades_per_hour
+        self.max_positions_per_class  = max_positions_per_class
 
         # ── State ─────────────────────────────────────────────────────────────
         self.daily_start_balance: float                = account_balance
@@ -91,6 +94,23 @@ class RiskManager:
         for rec in self.open_positions.values():
             if rec.asset == asset:
                 return False, f"DUPLICATE_POSITION ({asset} already open)"
+
+        # 4. Portfolio concentration — cap positions per asset class
+        if self.max_positions_per_class > 0:
+            try:
+                from src.data.symbol_mapper import get_asset_class
+                incoming_class = get_asset_class(asset)
+                class_count = sum(
+                    1 for r in self.open_positions.values()
+                    if get_asset_class(r.asset) == incoming_class
+                )
+                if class_count >= self.max_positions_per_class:
+                    return False, (
+                        f"CONCENTRATION_LIMIT ({incoming_class}: "
+                        f"{class_count}/{self.max_positions_per_class} open)"
+                    )
+            except Exception:
+                pass  # never block trading due to classification errors
 
         return True, "APPROVED"
 

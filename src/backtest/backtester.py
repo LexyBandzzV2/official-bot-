@@ -43,7 +43,12 @@ except ImportError as e:
     log.error("Backtest import error: %s", e)
     raise
 
-WARMUP_BARS = 60   # minimum bars needed before emitting signals
+# Minimum bars before signal emission.
+# Alligator: 13 bars, Stochastic: 14 bars, Vortex: 14 bars → max = 14.
+# We use 30 to give SMMA a clean initialisation window (SMMA is recursive and
+# benefits from ~2× the longest period).  The old value of 60 threw away an
+# extra 30 bars of usable history with no benefit.
+WARMUP_BARS = 30
 
 
 class Backtester:

@@ -134,40 +134,48 @@ class ExitPolicy:
     adverse_wick_threshold:  float = 0.30  # adverse wick ≥ this = pushback signal (informational)
     fade_confirmation_bars:  int   = 1     # min weak bars in window before tightening fires
     fade_tighten_frac:       float = 0.30  # ATR fraction for candle-trail candidate stop
+    # Minimum favorable excursion (as a fraction of entry price) required before the
+    # peak-giveback exit is eligible to fire.  Prevents exiting at a loss when the
+    # move was trivially small (e.g. a doji that barely nudged past entry on noise).
+    # 0.003 = 0.3%: the peak must reach entry × 1.003 before giveback can trigger.
+    min_mfe_pct:             float = 0.003
 
 
 # ── Concrete policies ─────────────────────────────────────────────────────────
 
+# 3m / 5m scalp: let the move develop, lock in at achievable levels.
 ScalpExitPolicy = ExitPolicy(
     name               = "SCALP",
-    giveback_frac      = 0.25,
-    break_even_pct     = 0.30,
+    giveback_frac      = 0.45,   # was 0.25 — wider breathing room for 3m/5m noise
+    break_even_pct     = 0.25,   # arm break-even at +0.25% (sooner protection)
+    min_mfe_pct        = 0.004,  # giveback can't fire until peak is +0.4% from entry
     profit_lock_stages = [
-        (1.50, 0.50),   # Stage 1: reach +1.50% → lock +0.50% above entry
-        (2.00, 1.00),   # Stage 2: reach +2.00% → lock +1.00% above entry | ATR eligible
-        (2.50, 1.50),   # Stage 3: reach +2.50% → lock +1.50% above entry
+        (0.50, 0.15),   # Stage 1: reach +0.50% → lock +0.15% above entry
+        (1.00, 0.50),   # Stage 2: reach +1.00% → lock +0.50% above entry | ATR eligible
+        (2.00, 1.00),   # Stage 3: reach +2.00% → lock +1.00% above entry
     ],
     trail_mode               = "atr",
-    atr_multiplier           = 1.5,
-    atr_eligible_after_stage = 2,    # ATR trail only after stage-2 lock is reached
-    momentum_fade_window     = 3,    # inspect last 3 bars for shrinking-body fade
-    fade_confirmation_bars   = 2,    # require 2 weak bars before tightening fires
-    fade_tighten_frac        = 0.30, # ATR fraction for candle-trail candidate stop
+    atr_multiplier           = 1.2,  # tighter ATR trail (was 1.5) to hold gains longer
+    atr_eligible_after_stage = 2,
+    momentum_fade_window     = 3,
+    fade_confirmation_bars   = 2,
+    fade_tighten_frac        = 0.30,
 )
 
-# 1m micro-scalp policy: same staged locks but break-even arms later (+0.80%)
-# because 1m noise is higher and premature break-even causes too many stop-outs.
+# 1m micro-scalp: enough room so normal 1m candle noise doesn't trigger exit,
+# but locks in protection once a real move materialises.
 ScalpMicroExitPolicy = ExitPolicy(
     name               = "SCALP_1M",
-    giveback_frac      = 0.25,
-    break_even_pct     = 0.80,   # Stage 2: arm break-even at +0.8% (1m needs more room)
+    giveback_frac      = 0.50,   # was 0.25 — allow 50% pullback before exiting
+    break_even_pct     = 0.30,   # was 0.80 — protect entry at +0.30% (sooner)
+    min_mfe_pct        = 0.003,  # giveback can't fire until peak is +0.3% from entry
     profit_lock_stages = [
-        (1.50, 0.50),   # Stage 3a: reach +1.50% → lock +0.50%
-        (2.00, 1.00),   # Stage 3b: reach +2.00% → lock +1.00% | ATR trail eligible
-        (2.50, 1.50),   # Stage 3c: reach +2.50% → lock +1.50%
+        (0.50, 0.15),   # Stage 1: reach +0.50% → lock +0.15%
+        (1.00, 0.50),   # Stage 2: reach +1.00% → lock +0.50% | ATR trail eligible
+        (2.00, 1.00),   # Stage 3: reach +2.00% → lock +1.00%
     ],
-    trail_mode               = "atr",    # Stage 4: ATR trail after stage-2 lock
-    atr_multiplier           = 1.5,
+    trail_mode               = "atr",
+    atr_multiplier           = 1.2,  # was 1.5 — tighter trail to capture 1m moves
     atr_eligible_after_stage = 2,
     momentum_fade_window     = 3,
     fade_confirmation_bars   = 2,
@@ -176,25 +184,27 @@ ScalpMicroExitPolicy = ExitPolicy(
 
 IntermediateExitPolicy = ExitPolicy(
     name               = "INTERMEDIATE",
-    giveback_frac      = 0.35,     # preserved from Phase 2 PEAK_GIVEBACK_FRACTION
-    break_even_pct     = 0.60,
+    giveback_frac      = 0.45,   # was 0.35 — give 15m/1h trades more room to run
+    break_even_pct     = 0.50,   # was 0.60 — protect entry slightly sooner
+    min_mfe_pct        = 0.005,  # giveback can't fire until peak is +0.5% from entry
     profit_lock_stages = [
-        (1.00, 0.50),
-        (2.00, 1.00),
-        (3.00, 1.50),
+        (0.75, 0.25),   # Stage 1: reach +0.75% → lock +0.25%
+        (1.50, 0.75),   # Stage 2: reach +1.50% → lock +0.75%
+        (3.00, 1.50),   # Stage 3: reach +3.00% → lock +1.50%
     ],
     trail_mode           = "candle",
-    momentum_fade_window = 3,   # candle-quality tightening enabled for intermediate
+    momentum_fade_window = 3,
 )
 
 SwingExitPolicy = ExitPolicy(
     name               = "SWING",
     giveback_frac      = 0.50,
     break_even_pct     = 1.00,
+    min_mfe_pct        = 0.008,  # giveback can't fire until peak is +0.8% from entry
     profit_lock_stages = [
-        (2.00, 1.00),
-        (4.00, 2.00),
-        (6.00, 3.00),
+        (2.00, 0.75),   # Stage 1: reach +2.00% → lock +0.75%
+        (4.00, 2.00),   # Stage 2: reach +4.00% → lock +2.00%
+        (7.00, 3.50),   # Stage 3: reach +7.00% → lock +3.50%
     ],
     trail_mode           = "candle",
     momentum_fade_window = 0,   # disabled — too noisy on higher timeframes

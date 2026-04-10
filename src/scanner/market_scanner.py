@@ -42,9 +42,11 @@ try:
         TIMEZONE, MAX_RISK_PER_TRADE, STOP_LOSS_PCT,
         MAX_DAILY_DRAWDOWN, MAX_TRADES_PER_HOUR, ACCOUNT_BALANCE,
         ML_CONFIDENCE_THRESHOLD, AI_CONFIDENCE_THRESHOLD,
-        PEAK_GIVEBACK_ENABLED, PEAK_GIVEBACK_FRACTION,
+        PEAK_GIVEBACK_ENABLED, PEAK_GIVEBACK_FRACTION, PEAK_GIVEBACK_MIN_MFE_PCT,
         TRADING_MODE,
         SCALP_ATR_MULTIPLIER, SCALP_MOMENTUM_FADE_WINDOW, SCALP_MOMENTUM_FADE_TIGHTEN_FRAC,
+        PARTIAL_EXIT_ENABLED, PARTIAL_EXIT_PCT, PARTIAL_EXIT_MIN_PROFIT_PCT,
+        MAX_POSITIONS_PER_CLASS, DATA_FRESHNESS_MULTIPLIER,
     )
     from src.data.heikin_ashi      import convert_to_heikin_ashi
     from src.data.market_data      import get_latest_candles
@@ -155,11 +157,12 @@ class MarketScanner:
         self.execution_broker = (execution_broker or "").strip().lower() or None
 
         self.risk_manager = RiskManager(
-            account_balance        = account_balance,
-            max_risk_per_trade     = MAX_RISK_PER_TRADE,
-            stop_loss_pct          = STOP_LOSS_PCT,
-            max_daily_drawdown     = MAX_DAILY_DRAWDOWN,
-            max_trades_per_hour    = MAX_TRADES_PER_HOUR,
+            account_balance          = account_balance,
+            max_risk_per_trade       = MAX_RISK_PER_TRADE,
+            stop_loss_pct            = STOP_LOSS_PCT,
+            max_daily_drawdown       = MAX_DAILY_DRAWDOWN,
+            max_trades_per_hour      = MAX_TRADES_PER_HOUR,
+            max_positions_per_class  = MAX_POSITIONS_PER_CLASS,
         )
         # trade_id → (TradeRecord, TrailingStop, optional PeakGiveback, optional AlligatorTrailingTP)
         self._open: dict[str, tuple[TradeRecord, TrailingStop, Optional[PeakGiveback], Optional[AlligatorTrailingTP]]] = {}
@@ -291,13 +294,35 @@ class MarketScanner:
 
         # Step 1: Fetch + convert HA for all symbols
         ha_data: dict[str, object] = {}  # symbol → ha_df
+        _tf_mins: dict[str, int] = {
+            "1m": 1, "3m": 3, "5m": 5, "15m": 15, "30m": 30,
+            "1h": 60, "2h": 120, "4h": 240, "1d": 1440,
+        }
+        _bar_seconds   = _tf_mins.get(self.timeframe, 60) * 60
+        _stale_limit_s = _bar_seconds * DATA_FRESHNESS_MULTIPLIER
+
         for sym in self.symbols:
             try:
-                # Use configured data source if set, otherwise auto-detect
-                src = self.data_source if self.data_source else best_source(sym)
+                src    = self.data_source if self.data_source else best_source(sym)
                 raw_df = get_latest_candles(sym, self.timeframe, self.candles_lookback, source=src)
                 if raw_df.empty:
                     continue
+
+                # Freshness check: skip symbols whose last candle is too old.
+                if DATA_FRESHNESS_MULTIPLIER > 0 and "time" in raw_df.columns:
+                    from datetime import timezone as _tz_mod
+                    _last_ts = raw_df["time"].iloc[-1]
+                    _now_utc = datetime.now(_tz_mod.utc)
+                    if hasattr(_last_ts, "tzinfo") and _last_ts.tzinfo is None:
+                        _last_ts = _last_ts.replace(tzinfo=_tz_mod.utc)
+                    _age_s = (_now_utc - _last_ts).total_seconds()
+                    if _age_s > _stale_limit_s:
+                        log.warning(
+                            "Stale data skipped: %s last candle is %.0fs old (limit=%.0fs)",
+                            sym, _age_s, _stale_limit_s,
+                        )
+                        continue
+
                 ha_df = convert_to_heikin_ashi(raw_df)
                 ha_data[sym] = ha_df
             except Exception as e:
@@ -514,18 +539,21 @@ class MarketScanner:
                 continue
 
             # AI confidence
+            # rank_signal returns None when no AI client is available (fail-open).
+            # Only gate and apply score effect when a real score was returned.
             ai_score = rank_signal(sig)
             sig.ai_confidence = ai_score
-            # Phase 5: apply AI effect to score
-            # Phase 11: regime-adjusted AI threshold
             _ai_threshold = (
                 _resolve_ai_threshold(AI_CONFIDENCE_THRESHOLD, regime_ctx)
                 if _REGIME_AVAILABLE else AI_CONFIDENCE_THRESHOLD
             )
-            apply_ai_effect(sig, ai_score, _ai_threshold)
-            if ai_score < _ai_threshold:
-                self._reject_signal(sig, ha_df, f"AI rejected (score={ai_score:.0%})")
-                continue
+            if ai_score is not None:
+                apply_ai_effect(sig, ai_score, _ai_threshold)
+                if ai_score < _ai_threshold:
+                    self._reject_signal(sig, ha_df, f"AI rejected (score={ai_score:.0%})")
+                    continue
+            else:
+                log.debug("AI unavailable — skipping AI gate for %s %s", sym, sig.signal_type)
 
             # Risk manager approval
             approved, reason = self.risk_manager.approve_signal(sig)
@@ -671,10 +699,14 @@ class MarketScanner:
                 )
         tp_track: Optional[PeakGiveback] = None
         if PEAK_GIVEBACK_ENABLED:
+            # Use per-policy min_mfe_pct so the giveback never fires on noise.
+            # Falls back to the global config value when the policy hasn't set one.
+            _min_mfe = getattr(policy, "min_mfe_pct", PEAK_GIVEBACK_MIN_MFE_PCT)
             tp_track = PeakGiveback(
-                direction="buy" if sig.signal_type == "BUY" else "sell",
-                entry_price=entry,
-                giveback_frac=_adapted_gb,
+                direction    = "buy" if sig.signal_type == "BUY" else "sell",
+                entry_price  = entry,
+                giveback_frac= _adapted_gb,
+                min_mfe_pct  = _min_mfe,
             )
             tp_track.update_bar(float(last["high"]), float(last["low"]))
 
@@ -829,9 +861,11 @@ class MarketScanner:
 
             ag_df = calculate_alligator(ha_df)
             last  = ag_df.iloc[-1]
-            teeth_now = float(last["teeth"])
-            lips_now = float(last["lips"])
-            
+            # Define close_price here so all code below can reference it safely.
+            close_price = float(last["ha_close"])
+            teeth_now   = float(last["teeth"])
+            lips_now    = float(last["lips"])
+
             if np.isnan(teeth_now):
                 teeth_now = float(rec.entry_price)
             if np.isnan(lips_now):
@@ -1130,7 +1164,6 @@ class MarketScanner:
                 except Exception as _fade_err:
                     log.debug("Momentum-fade tightening error for %s: %s", rec.asset, _fade_err)
 
-            close_price = float(last["ha_close"])
             should_close, close_reason = self.risk_manager.check_exit_conditions(
                 tid,
                 close_price,
@@ -1216,12 +1249,99 @@ class MarketScanner:
         for tid in to_close:
             self._open.pop(tid, None)
 
+    # ── Startup state restoration ─────────────────────────────────────────────
+
+    def _restore_open_positions(self) -> None:
+        """Reload open trades from the database after a restart.
+
+        Rebuilds in-memory TrailingStop and PeakGiveback objects from the last
+        persisted stop levels so trailing and exit logic resumes correctly.
+        Positions whose assets are no longer in self.symbols are still restored
+        so they can be monitored and closed.
+        """
+        from src.data.db import get_open_trades
+        rows = get_open_trades()
+        if not rows:
+            return
+
+        restored = 0
+        for row in rows:
+            tid = row.get("trade_id", "")
+            if not tid or tid in self._open:
+                continue
+            try:
+                policy = get_exit_policy(row.get("timeframe", self.timeframe))
+                _direction = "buy" if row["signal_type"] == "BUY" else "sell"
+                _entry     = float(row["entry_price"])
+                _sl_hard   = float(row["stop_loss_hard"])
+                _trail_val = float(row["trailing_stop"])
+
+                trail = TrailingStop(
+                    direction    = _direction,
+                    entry_price  = _entry,
+                    initial_teeth= _trail_val,
+                    stop_loss_pct= STOP_LOSS_PCT,
+                )
+                # Override to exact persisted level (TrailingStop may clamp to hard stop)
+                trail.current_stop = _trail_val
+
+                tp_track: Optional[PeakGiveback] = None
+                if PEAK_GIVEBACK_ENABLED:
+                    _min_mfe = getattr(policy, "min_mfe_pct", PEAK_GIVEBACK_MIN_MFE_PCT)
+                    tp_track = PeakGiveback(
+                        direction    = _direction,
+                        entry_price  = _entry,
+                        giveback_frac= policy.giveback_frac,
+                        min_mfe_pct  = _min_mfe,
+                    )
+
+                rec = TradeRecord(
+                    trade_id         = tid,
+                    signal_type      = row["signal_type"],
+                    asset            = row["asset"],
+                    timeframe        = row.get("timeframe", self.timeframe),
+                    entry_time       = datetime.fromisoformat(row["entry_time"]),
+                    entry_price      = _entry,
+                    stop_loss_hard   = _sl_hard,
+                    trailing_stop    = _trail_val,
+                    position_size    = float(row["position_size"]),
+                    account_risk_pct = float(row["account_risk_pct"]),
+                    alligator_point  = bool(row.get("alligator_point", False)),
+                    stochastic_point = bool(row.get("stochastic_point", False)),
+                    vortex_point     = bool(row.get("vortex_point", False)),
+                    jaw_at_entry     = row.get("jaw_at_entry"),
+                    teeth_at_entry   = row.get("teeth_at_entry"),
+                    lips_at_entry    = row.get("lips_at_entry"),
+                    ml_confidence    = row.get("ml_confidence"),
+                    ai_confidence    = row.get("ai_confidence"),
+                    strategy_mode    = row.get("strategy_mode", "UNKNOWN"),
+                    max_trail_reached= _trail_val,
+                    # Lifecycle fields
+                    break_even_armed = bool(row.get("break_even_armed", False)),
+                    profit_lock_stage= int(row.get("profit_lock_stage", 0)),
+                    was_protected_profit = bool(row.get("was_protected_profit", False)),
+                    regime_label_at_entry = row.get("regime_label_at_entry"),
+                    regime_confidence_at_entry = float(row.get("regime_confidence_at_entry", 0.0)),
+                )
+                rec._trail_stop   = trail   # type: ignore[attr-defined]
+                rec._exit_policy  = policy  # type: ignore[attr-defined]
+
+                self._open[tid] = (rec, trail, tp_track, None)
+                self.risk_manager.record_opened_from_record(rec)
+                restored += 1
+            except Exception as exc:
+                log.warning("Could not restore trade %s: %s", tid, exc)
+
+        if restored:
+            log.info("Restored %d open position(s) from database after restart.", restored)
+
     # ── Main loop ─────────────────────────────────────────────────────────────
 
     def start(self) -> None:
         """Block and run scan cycles until stop() is called or SIGINT received."""
         _stop_event.clear()
         init_db()
+        self._restore_open_positions()
         sleep_s = _TF_SECONDS.get(self.timeframe, 3600)
         mode    = "DRY RUN" if self.dry_run else "LIVE TRADING"
         log.info("Scanner started — %s — timeframe: %s — %d symbols — interval: %ds",
