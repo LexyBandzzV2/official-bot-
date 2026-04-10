@@ -20,7 +20,11 @@ from rich.columns import Columns
 
 from src.signals.types import BuySignalResult, SellSignalResult, TradeRecord
 
-console = Console()
+# Configure console for Windows compatibility
+try:
+    console = Console(force_terminal=True, legacy_windows=True)
+except TypeError:
+    console = Console()
 
 try:
     from src.config import TIMEZONE, ML_CONFIDENCE_THRESHOLD, AI_CONFIDENCE_THRESHOLD

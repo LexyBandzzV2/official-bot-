@@ -111,28 +111,19 @@ def cmd_scan(ticker, scan_all, category, timeframe, historical, days, top, ohlc)
         console.print("[red]Specify --ticker, --all, or --category[/]")
         raise SystemExit(1)
 
-    # ── ASCII Art Banner ──────────────────────────────────────────────────────
-    BANNER = (
-        "[bold cyan]"
-        " ██████  ██     ██ ██          ███████ ████████  █████  ██      ██   ██ \n"
-        "██    ██ ██     ██ ██          ██         ██    ██   ██ ██      ██  ██  \n"
-        "██    ██ ██  █  ██ ██          ███████    ██    ███████ ██      █████   \n"
-        "██    ██ ██ ███ ██ ██               ██    ██    ██   ██ ██      ██  ██  \n"
-        " ██████   ███ ███  ███████     ███████    ██    ██   ██ ███████ ██   ██ "
-        "[/bold cyan]"
-    )
-    console.print(BANNER)
+    # ── Scanner Banner ───────────────────────────────────────────────────────
+    console.print("[bold cyan]=== ALGOBOT MARKET SCANNER ===[/bold cyan]")
     console.print()
 
     mode_lbl  = "[green]HISTORICAL[/green]" if historical else "[bold green]LIVE[/bold green]"
     ohlc_lbl  = "  [dim](OHLC mode)[/dim]" if ohlc else ""
     console.print(
-        f"[bold white]  AlgoBot Scan[/bold white]  ·  "
-        f"Symbols: [bold yellow]{len(symbols)}[/bold yellow]  ·  "
-        f"TF: [bold yellow]{timeframe}[/bold yellow]  ·  "
+        f"[bold white]  AlgoBot Scan[/bold white]  "
+        f"Symbols: [bold yellow]{len(symbols)}[/bold yellow]  "
+        f"TF: [bold yellow]{timeframe}[/bold yellow]  "
         f"Mode: {mode_lbl}{ohlc_lbl}"
     )
-    console.rule(style="cyan")
+    console.print("[cyan]" + "-" * 80 + "[/cyan]")
 
     import pytz
     from src.config import TIMEZONE
@@ -505,16 +496,11 @@ def cmd_status(risk):
         return
 
     print_status(
-        lm_studio_ok     = lm_ok,
-        openrouter_ok    = or_ok,
-        finnhub_ok       = bool(FINNHUB_API_KEY),
-        supabase_ok      = bool(SUPABASE_URL),
-        ml_ready         = ml_st["model_available"],
-        ml_samples       = ml_st["total_samples"],
-        open_trades      = open_count,
-        closed_trades    = closed_count,
         account_balance  = ACCOUNT_BALANCE,
-        timezone         = TIMEZONE,
+        daily_loss_pct   = 0.0,
+        open_count       = open_count,
+        hourly_remaining = 15,
+        scanner_running  = False,
     )
 
 
