@@ -1,0 +1,53 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "AlgoBot — Scanner (Dry Run, 1h)",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["bot.py", "start", "--timeframe", "1h", "--dry-run"],
+      "port": 0
+    },
+    {
+      "name": "AlgoBot — Scanner (Dry Run, 4h)",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["bot.py", "start", "--timeframe", "4h", "--dry-run"],
+      "port": 0
+    },
+    {
+      "name": "AlgoBot — Scanner (Dry Run, 15m)",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["bot.py", "start", "--timeframe", "15m", "--dry-run"],
+      "port": 0
+    },
+    {
+      "name": "AlgoBot — Scanner LIVE (1h)",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["bot.py", "start", "--timeframe", "1h", "--live"],
+      "port": 0
+    },
+    {
+      "name": "AlgoBot — Scan All Assets (4h, dry-run)",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["bot.py", "scan", "--all", "--timeframe", "4h", "--dry-run"],
+      "port": 0
+    },
+    {
+      "name": "AlgoBot — Backtest EURUSD 1h (180 days)",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["bot.py", "backtest", "--ticker", "EURUSD", "--timeframe", "1h", "--days", "180", "--balance", "10000"],
+      "port": 0
+    },
+    {
+      "name": "AlgoBot — ML Train",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["bot.py", "ml", "train"],
+      "port": 0
+    },
+    {
+      "name": "AlgoBot — Status",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["bot.py", "status", "--risk"],
+      "port": 0
+    }
+  ]
+}
