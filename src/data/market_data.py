@@ -74,10 +74,15 @@ except ImportError:
     log.warning("yfinance not installed — yfinance source unavailable")
 
 try:
-    from src.config import FINNHUB_API_KEY, BINANCE_API_KEY, BINANCE_SECRET
+    from src.config import FINNHUB_API_KEY, BINANCE_API_KEY, BINANCE_SECRET, \
+                           ALPACA_API_KEY, ALPACA_SECRET_KEY, ALPACA_DATA_URL, ALPACA_DATA_FEED
 except ImportError:
     FINNHUB_API_KEY  = ""
     BINANCE_API_KEY  = ""
+    ALPACA_API_KEY   = ""
+    ALPACA_SECRET_KEY = ""
+    ALPACA_DATA_URL  = "https://data.alpaca.markets"
+    ALPACA_DATA_FEED = "iex"
     BINANCE_SECRET   = ""
 
 try:
@@ -99,9 +104,10 @@ def _resolve_symbol(symbol: str, source: str) -> str:
         return to_finnhub(symbol) or symbol
     if source == "yfinance":
         return to_yfinance(symbol) or symbol
-    if source == "ibkr":
-        # IBKR uses canonical symbols directly
-        return symbol
+    if source in ("alpaca", "ibkr"):
+        # Both use plain ticker strings (NVDA, MSTR, etc.) for stocks;
+        # Alpaca uses yfinance ticker which is the same as the canonical key.
+        return to_yfinance(symbol) or symbol
     return symbol
 
 
@@ -162,6 +168,12 @@ TIMEFRAME_FINNHUB: dict[str, str] = {
 TIMEFRAME_YFINANCE: dict[str, str] = {
     "1m": "1m", "5m": "5m", "15m": "15m", "30m": "30m",
     "1h": "1h", "1d": "1d", "1w": "1wk",
+}
+
+# Alpaca v2 timeframe strings: {N}{Min|Hour|Day|Week|Month}
+TIMEFRAME_ALPACA: dict[str, str] = {
+    "1m": "1Min", "3m": "3Min", "5m": "5Min", "15m": "15Min", "30m": "30Min",
+    "1h": "1Hour", "2h": "2Hour", "4h": "4Hour", "1d": "1Day", "1w": "1Week",
 }
 
 # ── Internal helpers ──────────────────────────────────────────────────────────
@@ -269,7 +281,74 @@ def _fetch_finnhub(
     return _normalise(df)
 
 
-# ── yfinance (stocks / ETFs / historical) ─────────────────────────────────────
+# ── Alpaca Data API (stocks / ETFs — real-time via IEX, free with paper account) ─
+
+def _alpaca_headers() -> dict[str, str]:
+    return {
+        "APCA-API-KEY-ID":     ALPACA_API_KEY,
+        "APCA-API-SECRET-KEY": ALPACA_SECRET_KEY,
+    }
+
+
+def _fetch_alpaca_bars(
+    symbol:    str,      # plain ticker, e.g. "NVDA" or "MSTR"
+    timeframe: str,
+    start:     datetime,
+    end:       datetime,
+    limit:     int = 1000,
+) -> pd.DataFrame:
+    """Fetch OHLCV bars from Alpaca Data API v2.
+
+    Free with any Alpaca account (paper or live).  Uses IEX feed by default
+    which provides real-time data during market hours — significantly better
+    than yfinance's 15-minute delay.
+
+    Falls back gracefully to an empty DataFrame on any auth / network error.
+    """
+    if not ALPACA_API_KEY or not ALPACA_SECRET_KEY:
+        raise RuntimeError("ALPACA_API_KEY / ALPACA_SECRET_KEY not configured")
+
+    tf = TIMEFRAME_ALPACA.get(timeframe, "15Min")
+    base = (ALPACA_DATA_URL or "https://data.alpaca.markets").rstrip("/")
+    url  = f"{base}/v2/stocks/{symbol}/bars"
+
+    params = {
+        "timeframe": tf,
+        "start":     start.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "end":       end.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "limit":     limit,
+        "adjustment": "raw",
+        "feed":      ALPACA_DATA_FEED or "iex",
+    }
+
+    all_bars: list[dict] = []
+    next_token: Optional[str] = None
+
+    for _ in range(20):   # max 20 pages
+        if next_token:
+            params["page_token"] = next_token
+        resp = requests.get(url, headers=_alpaca_headers(), params=params, timeout=15)
+        if resp.status_code == 401:
+            raise RuntimeError("Alpaca: authentication failed — check ALPACA_API_KEY / SECRET")
+        resp.raise_for_status()
+        data = resp.json()
+        bars = data.get("bars") or []
+        all_bars.extend(bars)
+        next_token = data.get("next_page_token")
+        if not next_token or not bars:
+            break
+
+    if not all_bars:
+        return pd.DataFrame()
+
+    df = pd.DataFrame(all_bars)
+    df = df.rename(columns={"t": "time", "o": "open", "h": "high",
+                             "l": "low", "c": "close", "v": "volume"})
+    df["time"] = pd.to_datetime(df["time"], utc=True)
+    return _normalise(df)
+
+
+# ── yfinance (stocks / ETFs / historical fallback) ────────────────────────────
 
 def _fetch_yfinance(
     symbol:    str,
@@ -421,13 +500,24 @@ def get_historical_ohlcv(
             except Exception as e:
                 errors.append(f"yfinance-fallback: {e}")
 
-    if source in ("yfinance", "fallback"):
-        # Only allow yfinance for non-crypto assets
+    if source in ("alpaca", "yfinance", "fallback"):
+        # Only allow stock sources for non-crypto assets
         if not is_crypto:
+            # Try Alpaca first (real-time IEX feed, free with paper account)
+            if ALPACA_API_KEY and ALPACA_SECRET_KEY:
+                try:
+                    resolved = _resolve_symbol(symbol, "alpaca")
+                    df = _fetch_alpaca_bars(resolved, timeframe, start_utc, end_utc)
+                    if not df.empty:
+                        return df
+                except Exception as e:
+                    errors.append(f"alpaca: {e}")
+            # Fallback: yfinance (15-min delayed but always available)
             try:
                 resolved = _resolve_symbol(symbol, "yfinance")
                 df = _fetch_yfinance(resolved, timeframe, start_utc, end_utc)
                 if not df.empty:
+                    log.debug("Alpaca unavailable for %s, used yfinance fallback", symbol)
                     return df
             except Exception as e:
                 errors.append(f"yfinance: {e}")

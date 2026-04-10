@@ -215,16 +215,16 @@ def ibkr_supported(symbol: str) -> bool:
 def best_source(symbol: str) -> str:
     """Return the preferred data source for a symbol.
 
-    crypto → ccxt  |  forex/commodities/indices → finnhub  |  stocks → yfinance
-    
-    Note: To use IBKR as a data source, explicitly pass source="ibkr" to
-    get_historical_ohlcv() or get_latest_candles().
+    crypto → ccxt (Binance/Bitstamp, real-time, free)
+    stocks/ETFs → alpaca (IEX real-time feed, free with paper account;
+                          falls back to yfinance if keys not set)
+    forex/commodities → finnhub
     """
     asset_class = get_asset_class(symbol)
     if asset_class == "crypto":
         return "ccxt"
     if asset_class == "stock":
-        return "yfinance"
+        return "alpaca"
     return "finnhub"
 
 
