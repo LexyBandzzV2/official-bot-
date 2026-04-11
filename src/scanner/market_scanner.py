@@ -45,7 +45,6 @@ try:
         PEAK_GIVEBACK_ENABLED, PEAK_GIVEBACK_FRACTION, PEAK_GIVEBACK_MIN_MFE_PCT,
         TRADING_MODE,
         SCALP_ATR_MULTIPLIER, SCALP_MOMENTUM_FADE_WINDOW, SCALP_MOMENTUM_FADE_TIGHTEN_FRAC,
-        PARTIAL_EXIT_ENABLED, PARTIAL_EXIT_PCT, PARTIAL_EXIT_MIN_PROFIT_PCT,
         MAX_POSITIONS_PER_CLASS, DATA_FRESHNESS_MULTIPLIER,
         PYRAMID_ENABLED, PYRAMID_TRIGGER_PCT, PYRAMID_RISK_PCT, PYRAMID_LEVERAGE,
         MAX_PYRAMID_PER_TRADE,
@@ -1318,7 +1317,7 @@ class MarketScanner:
                                     signal_type=rec.signal_type,
                                     symbol=rec.asset,
                                     timeframe=rec.timeframe,
-                                    volume=_py_size / PYRAMID_LEVERAGE,   # base units, router applies leverage
+                                    volume=_py_size,   # base units — router applies PYRAMID_LEVERAGE
                                     expected_entry=_close_price,
                                     stop_loss=_py_stop,
                                     trade_id=f"{tid}_py1",
@@ -1341,6 +1340,14 @@ class MarketScanner:
             if self._broker:
                 try:
                     self._broker.close_order(rec.asset, tid)
+                    # Close pyramid leg if one was opened for this trade
+                    if self._pyramid_mgr.scale_in_count(tid) > 0:
+                        py_tid = f"{tid}_py1"
+                        try:
+                            self._broker.close_order(rec.asset, py_tid)
+                            log.info("Closed pyramid leg %s alongside base trade %s", py_tid, tid)
+                        except Exception as py_err:
+                            log.warning("Could not close pyramid leg %s: %s", py_tid, py_err)
                 except Exception as e:
                     log.warning("Broker close_order: %s", e)
 
@@ -1491,7 +1498,14 @@ class MarketScanner:
                 rec._trail_stop   = trail   # type: ignore[attr-defined]
                 rec._exit_policy  = policy  # type: ignore[attr-defined]
 
-                self._open[tid] = (rec, trail, tp_track, None)
+                _lips_at_entry = rec.lips_at_entry if rec.lips_at_entry is not None else _entry
+                _alligator_tp = AlligatorTrailingTP(
+                    direction=_direction,
+                    entry_price=_entry,
+                    initial_lips=float(_lips_at_entry),
+                    min_profit_pct=0.01,
+                )
+                self._open[tid] = (rec, trail, tp_track, _alligator_tp)
                 self.risk_manager.record_opened_from_record(rec)
                 restored += 1
             except Exception as exc:

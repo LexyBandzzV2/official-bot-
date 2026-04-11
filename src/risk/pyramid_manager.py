@@ -88,22 +88,19 @@ class PyramidManager:
         entry_price: float,
         stop_loss_price: float,
         risk_pct: float,
-        leverage: float,
+        leverage: float,   # kept as param for API compatibility, not used in calculation
     ) -> float:
-        """Calculate leveraged position size for the scale-in entry.
+        """Calculate base position size for the scale-in entry.
 
-        The risk_pct applies to account balance (e.g. 0.015 = 1.5%).
-        The leverage multiplier scales up the number of units purchased,
-        giving greater dollar exposure with the same stop-loss distance.
-
-        Returns units to buy/sell (0 if inputs are invalid).
+        Returns the number of units before leverage is applied.
+        Pass the result directly to broker_router.place_order(volume=..., leverage=leverage).
+        The router will apply the leverage multiplier to the volume automatically.
         """
         if account_balance <= 0 or entry_price <= 0:
             return 0.0
         price_risk = abs(entry_price - stop_loss_price)
         if price_risk == 0:
             return 0.0
-        dollar_risk   = account_balance * risk_pct
-        base_units    = dollar_risk / price_risk
-        leveraged_units = base_units * max(1.0, leverage)
-        return round(leveraged_units, 6)
+        dollar_risk = account_balance * risk_pct
+        base_units = dollar_risk / price_risk
+        return round(base_units, 6)

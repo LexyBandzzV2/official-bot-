@@ -21,6 +21,10 @@ allowing winners to run while protecting against sudden reversals.
 
 from __future__ import annotations
 
+import logging
+
+log = logging.getLogger(__name__)
+
 
 class AlligatorTrailingTP:
     """Manages trailing take profit based on Alligator lips (green line)."""
@@ -147,7 +151,3 @@ class AlligatorTrailingTP:
             f"locked={self.locked_profit_pct():.2f}%)"
         )
 
-
-# Import logging at module level
-import logging
-log = logging.getLogger(__name__)
