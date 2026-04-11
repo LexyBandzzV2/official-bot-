@@ -47,7 +47,10 @@ try:
         SCALP_ATR_MULTIPLIER, SCALP_MOMENTUM_FADE_WINDOW, SCALP_MOMENTUM_FADE_TIGHTEN_FRAC,
         PARTIAL_EXIT_ENABLED, PARTIAL_EXIT_PCT, PARTIAL_EXIT_MIN_PROFIT_PCT,
         MAX_POSITIONS_PER_CLASS, DATA_FRESHNESS_MULTIPLIER,
+        PYRAMID_ENABLED, PYRAMID_TRIGGER_PCT, PYRAMID_RISK_PCT, PYRAMID_LEVERAGE,
+        MAX_PYRAMID_PER_TRADE,
     )
+    from src.risk.pyramid_manager import PyramidManager
     from src.data.heikin_ashi      import convert_to_heikin_ashi
     from src.data.market_data      import get_latest_candles
     from src.data.symbol_mapper    import get_all_symbols, get_asset_class, best_source
@@ -166,6 +169,7 @@ class MarketScanner:
         )
         # trade_id → (TradeRecord, TrailingStop, optional PeakGiveback, optional AlligatorTrailingTP)
         self._open: dict[str, tuple[TradeRecord, TrailingStop, Optional[PeakGiveback], Optional[AlligatorTrailingTP]]] = {}
+        self._pyramid_mgr = PyramidManager()
         self._engines: dict[str, SignalEngine] = {}
         self._broker: Optional["BrokerRouter"] = None
         
@@ -1243,6 +1247,46 @@ class MarketScanner:
                 except Exception as _fade_err:
                     log.debug("Momentum-fade tightening error for %s: %s", rec.asset, _fade_err)
 
+            # ── Pyramid / scale-in check ──────────────────────────────────────────
+            if PYRAMID_ENABLED and not self._pyramid_mgr.already_pyramided(tid, MAX_PYRAMID_PER_TRADE):
+                _close_price = float(ha_df["ha_close"].iloc[-1]) if ha_df is not None and len(ha_df) > 0 else 0.0
+                if _close_price > 0 and self._pyramid_mgr.should_trigger(
+                    direction=rec.signal_type.lower(),
+                    entry_price=rec.entry_price,
+                    current_price=_close_price,
+                    trigger_pct=PYRAMID_TRIGGER_PCT,
+                ):
+                    if self.risk_manager.can_pyramid(rec.asset):
+                        _py_stop = rec.stop_loss_hard  # use original hard stop as pyramid stop
+                        _py_size = PyramidManager.pyramid_position_size(
+                            account_balance=self.risk_manager.account_balance,
+                            entry_price=_close_price,
+                            stop_loss_price=_py_stop,
+                            risk_pct=PYRAMID_RISK_PCT,
+                            leverage=PYRAMID_LEVERAGE,
+                        )
+                        if _py_size > 0:
+                            log.info(
+                                "PYRAMID TRIGGER %s %s — trade %.1f%% in profit, "
+                                "scaling in %.6f units (%.1fx leverage)",
+                                rec.signal_type.upper(), rec.asset,
+                                PYRAMID_TRIGGER_PCT, _py_size, PYRAMID_LEVERAGE,
+                            )
+                            try:
+                                self._broker.place_order(
+                                    signal_type=rec.signal_type,
+                                    symbol=rec.asset,
+                                    timeframe=rec.timeframe,
+                                    volume=_py_size / PYRAMID_LEVERAGE,   # base units, router applies leverage
+                                    expected_entry=_close_price,
+                                    stop_loss=_py_stop,
+                                    trade_id=f"{tid}_py1",
+                                    leverage=PYRAMID_LEVERAGE,
+                                )
+                                self._pyramid_mgr.record_pyramid(tid)
+                            except Exception as _py_err:
+                                log.warning("Pyramid entry failed for %s: %s", rec.asset, _py_err)
+
             should_close, close_reason = self.risk_manager.check_exit_conditions(
                 tid,
                 close_price,
@@ -1326,6 +1370,7 @@ class MarketScanner:
             to_close.append(tid)
 
         for tid in to_close:
+            self._pyramid_mgr.remove_trade(tid)
             self._open.pop(tid, None)
 
     # ── Startup state restoration ─────────────────────────────────────────────

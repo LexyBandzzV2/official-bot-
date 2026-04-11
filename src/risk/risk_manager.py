@@ -19,6 +19,14 @@ from typing import Dict, List, Optional, Tuple
 from src.signals.types import BuySignalResult, SellSignalResult, TradeRecord
 from src.risk.position_sizer import calculate_position_size
 from src.risk.trailing_stop import TrailingStop
+from src.config import (
+    MAX_OPEN_POSITIONS,
+    MAX_POSITIONS_PER_GROUP,
+    PYRAMID_ENABLED,
+    PYRAMID_TRIGGER_PCT,
+    PYRAMID_LEVERAGE,
+    PYRAMID_RISK_PCT,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +80,10 @@ class RiskManager:
         # 1. Daily kill switch
         if self.daily_kill_active:
             return False, "DAILY_KILL_SWITCH_ACTIVE"
+
+        # Hard cap: no more than MAX_OPEN_POSITIONS total
+        if len(self.open_positions) >= MAX_OPEN_POSITIONS:
+            return False, f"max_open_positions_reached ({len(self.open_positions)}/{MAX_OPEN_POSITIONS})"
 
         daily_loss_pct = self._daily_loss_pct()
         if daily_loss_pct >= self.max_daily_drawdown:
@@ -305,6 +317,18 @@ class RiskManager:
         self._refresh_hourly()
         return not self.daily_kill_active and self._hourly_count < self.max_trades_per_hour
 
+    def can_pyramid(self, symbol: str) -> bool:
+        """Return True if a scale-in entry is allowed for an existing open trade.
+
+        Checks: global position cap not exceeded, kill switch not active.
+        Correlation is already satisfied (pyramid is same symbol = same group).
+        """
+        if self.daily_kill_active:
+            return False
+        if len(self.open_positions) >= MAX_OPEN_POSITIONS:
+            return False
+        return True
+
     # ── Convenience overloads ─────────────────────────────────────────────────
 
     def record_opened_from_record(self, rec: "TradeRecord") -> None:
@@ -357,11 +381,11 @@ class RiskManager:
                     if rec.asset in group_members and rec.signal_type == "BUY"
                 )
 
-                # Hard limit: max 3 longs in any single correlation group
-                if open_in_group >= 3:
+                # Hard limit: max MAX_POSITIONS_PER_GROUP longs in any single correlation group
+                if open_in_group >= MAX_POSITIONS_PER_GROUP:
                     return True, (
                         f"CORRELATION_LIMIT ({group_name}: "
-                        f"{open_in_group} open, max 3 per group)"
+                        f"{open_in_group} open, max {MAX_POSITIONS_PER_GROUP} per group)"
                     )
 
             return False, ""

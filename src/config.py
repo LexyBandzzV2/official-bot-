@@ -82,7 +82,7 @@ PUSHOVER_USER_KEY:  str = os.getenv("PUSHOVER_USER_KEY", "")
 
 # ── Risk Parameters ───────────────────────────────────────────────────────────
 ACCOUNT_BALANCE:         float = float(os.getenv("ACCOUNT_BALANCE", "10000"))
-MAX_RISK_PER_TRADE:      float = float(os.getenv("MAX_RISK_PER_TRADE", "0.01"))   # 1 %
+MAX_RISK_PER_TRADE:      float = float(os.getenv("MAX_RISK_PER_TRADE", "0.03"))   # 3 %
 STOP_LOSS_PCT:           float = float(os.getenv("STOP_LOSS_PCT", "0.02"))        # 2 %
 MAX_DAILY_DRAWDOWN:      float = float(os.getenv("MAX_DAILY_DRAWDOWN", "0.10"))   # 10 %
 MAX_TRADES_PER_HOUR:     int   = int(os.getenv("MAX_TRADES_PER_HOUR", "15"))      # hard cap
@@ -128,6 +128,17 @@ PARTIAL_EXIT_MIN_PROFIT_PCT:   float = float(os.getenv("PARTIAL_EXIT_MIN_PROFIT_
 # Maximum number of simultaneously open positions within the same asset class.
 # Prevents holding 10 correlated crypto longs at the same time.
 MAX_POSITIONS_PER_CLASS: int = int(os.getenv("MAX_POSITIONS_PER_CLASS", "4"))
+
+# ── Global position cap ────────────────────────────────────────────────────────
+MAX_OPEN_POSITIONS: int = int(os.getenv("MAX_OPEN_POSITIONS", "4"))
+
+# ── Pyramid / scale-in system ──────────────────────────────────────────────────
+PYRAMID_ENABLED:       bool  = os.getenv("PYRAMID_ENABLED", "true").lower() in ("1", "true", "yes")
+PYRAMID_TRIGGER_PCT:   float = float(os.getenv("PYRAMID_TRIGGER_PCT",  "1.5"))   # % profit before scaling in
+PYRAMID_RISK_PCT:      float = float(os.getenv("PYRAMID_RISK_PCT",     "0.015")) # 1.5% risk on scale-in entry
+PYRAMID_LEVERAGE:      float = float(os.getenv("PYRAMID_LEVERAGE",     "3.0"))   # effective leverage on scale-in
+MAX_PYRAMID_PER_TRADE: int   = int(os.getenv("MAX_PYRAMID_PER_TRADE",  "1"))     # max scale-ins per open trade
+MAX_POSITIONS_PER_GROUP: int = int(os.getenv("MAX_POSITIONS_PER_GROUP", "2"))    # max longs per correlation group
 
 # ── Data freshness guard ───────────────────────────────────────────────────────
 # A candle is considered stale when its age exceeds DATA_FRESHNESS_MULTIPLIER × bar_interval.

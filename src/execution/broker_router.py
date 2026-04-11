@@ -392,8 +392,16 @@ class BrokerRouter:
         stop_loss:      float,
         trade_id:       str,
         take_profit:    Optional[float] = None,
+        leverage:       float = 1.0,
     ) -> Optional[dict]:
         """Place a market order through the correct broker.
+
+        Parameters
+        ----------
+        leverage: Simulated leverage multiplier for pyramid/scale-in entries.
+                  When > 1.0 the submitted volume is scaled up by this factor.
+                  For brokers with a native leverage API this would pass the
+                  multiplier directly instead of inflating the unit count.
 
         Returns fill info dict or None (dry-run always returns None).
         """
@@ -430,6 +438,14 @@ class BrokerRouter:
         if not self._cap_allows(broker_name):
             log.warning("Broker %s hourly cap reached — refusing order for %s", broker_name, symbol)
             return None
+
+        # Apply simulated leverage by scaling position size
+        # (for brokers with real leverage API support, this would pass leverage to the API instead)
+        if leverage > 1.0:
+            effective_volume = round(volume * leverage, 6)
+            log.info("Pyramid scale-in: applying %.1fx leverage — base %.6f units → %.6f units",
+                     leverage, volume, effective_volume)
+            volume = effective_volume
 
         req = {
             "signal_type": signal_type,
