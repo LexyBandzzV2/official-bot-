@@ -55,6 +55,7 @@ class AssetEntry:
     universe_group:  UniverseGroup
     asset_class:     str            # "crypto" | "stock" | "etf"
     is_meme:         bool = False
+    min_tf_minutes:  int  = 1       # minimum timeframe in minutes (1=any, 5=5m+, 15=15m+)
 
 
 # ── Static registry ──────────────────────────────────────────────────────────
@@ -114,7 +115,7 @@ def _build_registry() -> dict[str, AssetEntry]:
     for sym in _HIGH_BETA_ETFS:
         reg[sym] = AssetEntry(sym, UniverseGroup.HIGH_BETA_ETFS, "etf")
     for sym in _MEME_COIN_LANE:
-        reg[sym] = AssetEntry(sym, UniverseGroup.MEME_COIN_LANE, "crypto", is_meme=True)
+        reg[sym] = AssetEntry(sym, UniverseGroup.MEME_COIN_LANE, "crypto", is_meme=True, min_tf_minutes=5)
     return reg
 
 
@@ -207,3 +208,23 @@ def all_groups() -> list[UniverseGroup]:
 def registry_snapshot() -> dict[str, AssetEntry]:
     """Return a shallow copy of the full registry (for reporting)."""
     return dict(_REGISTRY)
+
+
+# ── Timeframe suitability ─────────────────────────────────────────────────────
+
+_TF_MINUTES: dict[str, int] = {
+    "1m": 1, "2m": 2, "3m": 3, "5m": 5, "15m": 15,
+    "30m": 30, "1h": 60, "2h": 120, "4h": 240, "1d": 1440,
+}
+
+
+def is_suitable_for_timeframe(symbol: str, timeframe: str) -> bool:
+    """Return False if this asset should not be traded on this timeframe.
+
+    Meme coins require at least 5m (too noisy on 1m/3m).
+    """
+    entry = get_entry(symbol)
+    if entry is None:
+        return True  # unknown asset — allow, fail-open
+    tf_mins = _TF_MINUTES.get(timeframe, 60)
+    return tf_mins >= entry.min_tf_minutes

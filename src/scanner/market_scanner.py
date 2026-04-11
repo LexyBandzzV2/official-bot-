@@ -49,6 +49,7 @@ try:
         MAX_POSITIONS_PER_CLASS, DATA_FRESHNESS_MULTIPLIER,
         PYRAMID_ENABLED, PYRAMID_TRIGGER_PCT, PYRAMID_RISK_PCT, PYRAMID_LEVERAGE,
         MAX_PYRAMID_PER_TRADE,
+        MTF_FILTER_ENABLED, MTF_BLOCK_COUNTER,
     )
     from src.risk.pyramid_manager import PyramidManager
     from src.data.heikin_ashi      import convert_to_heikin_ashi
@@ -67,7 +68,7 @@ try:
     from src.signals.types         import TradeRecord, BuySignalResult, SellSignalResult
     from src.scanner.candidate_ranker import score_symbol, rank_candidates
     # Final Sprint: asset universe + prefilter layer
-    from src.scanner.asset_universe import filter_to_universe, get_entry as _universe_get_entry
+    from src.scanner.asset_universe import filter_to_universe, get_entry as _universe_get_entry, is_suitable_for_timeframe
     from src.scanner.prefilters import run_prefilter, select_top_candidates as _select_top_prefilter
     from src.signals.strategy_mode import timeframe_to_mode as _timeframe_to_mode
     from src.display.tables        import (
@@ -135,6 +136,24 @@ _TF_SECONDS: dict[str, int] = {
     "1m": 60, "3m": 180, "5m": 300, "15m": 900, "30m": 1800,
     "1h": 3600, "2h": 7200, "4h": 14400, "1d": 86400,
 }
+
+
+def _risk_pct_for_timeframe(timeframe: str) -> float:
+    """Return the risk percentage appropriate for the given timeframe."""
+    from src.config import RISK_PCT_SCALP_MICRO, RISK_PCT_SCALP, RISK_PCT_INTERMEDIATE, RISK_PCT_SWING
+    tf_map = {
+        "1m": RISK_PCT_SCALP_MICRO,
+        "2m": RISK_PCT_SCALP_MICRO,
+        "3m": RISK_PCT_SCALP_MICRO,
+        "5m": RISK_PCT_SCALP,
+        "15m": RISK_PCT_INTERMEDIATE,
+        "30m": RISK_PCT_INTERMEDIATE,
+        "1h":  RISK_PCT_INTERMEDIATE,
+        "2h":  RISK_PCT_SWING,
+        "4h":  RISK_PCT_SWING,
+        "1d":  RISK_PCT_SWING,
+    }
+    return tf_map.get(timeframe, RISK_PCT_INTERMEDIATE)
 
 
 class MarketScanner:
@@ -313,6 +332,9 @@ class MarketScanner:
 
         for sym in self.symbols:
             try:
+                if not is_suitable_for_timeframe(sym, self.timeframe):
+                    log.debug("Skipping %s — not suitable for %s (min timeframe requirement)", sym, self.timeframe)
+                    continue
                 src    = self.data_source if self.data_source else best_source(sym)
                 raw_df = get_latest_candles(sym, self.timeframe, self.candles_lookback, source=src)
                 if raw_df.empty:
@@ -639,6 +661,23 @@ class MarketScanner:
                     self._reject_signal(sig, ha_df, _entry_reason)
                     continue
 
+            # ── Multi-timeframe trend confirmation ────────────────────────────────
+            if MTF_FILTER_ENABLED:
+                from src.signals.mtf_filter import check_mtf_alignment, get_higher_timeframe
+                _mtf = check_mtf_alignment(sym, self.timeframe, sig.signal_type.lower())
+                if _mtf == "COUNTER" and MTF_BLOCK_COUNTER:
+                    log.info(
+                        "MTF BLOCK %s %s — signal opposes %s trend",
+                        sig.signal_type, sym, get_higher_timeframe(self.timeframe),
+                    )
+                    self._reject_signal(sig, ha_df, "MTF_COUNTER")
+                    continue
+                if _mtf == "ALIGNED":
+                    log.debug(
+                        "MTF ALIGNED %s %s — confirmed on higher timeframe",
+                        sig.signal_type, sym,
+                    )
+
             # All gates passed
             sig.accepted_signal = True
             # Append ML/AI suffix to entry_reason_code (Phase 5)
@@ -707,7 +746,8 @@ class MarketScanner:
             sl = round(entry * (1.0 + _dynamic_stop_pct), 6)
 
         size   = calculate_position_size(
-            self.risk_manager.account_balance, entry, sl, MAX_RISK_PER_TRADE
+            self.risk_manager.account_balance, entry, sl,
+            risk_pct=_risk_pct_for_timeframe(self.timeframe),
         )
         if size <= 0:
             log.debug(
@@ -819,8 +859,9 @@ class MarketScanner:
         # Phase 4: initial policy-state name
         _initial_state = policy_state_name(policy.name, "INITIAL_STOP")
 
+        _risk_pct = _risk_pct_for_timeframe(self.timeframe)
         rec = TradeRecord(
-            trade_id        = str(uuid.uuid4()),
+            trade_id        = f"{sig.asset}_{self.timeframe}_{uuid.uuid4().hex[:8]}",
             signal_type     = sig.signal_type,
             asset           = sig.asset,
             timeframe       = sig.timeframe,
@@ -829,7 +870,7 @@ class MarketScanner:
             stop_loss_hard  = sl,
             trailing_stop   = trail.current_stop,
             position_size   = size,
-            account_risk_pct= MAX_RISK_PER_TRADE,
+            account_risk_pct= _risk_pct,
             alligator_point = sig.alligator_point,
             stochastic_point= sig.stochastic_point,
             vortex_point    = sig.vortex_point,
@@ -912,7 +953,7 @@ class MarketScanner:
             current_price=entry,
         )
         log_trade_open(rec.trade_id, sig.signal_type, sig.asset, sig.timeframe,
-                       entry, sl, trail.current_stop, size, MAX_RISK_PER_TRADE,
+                       entry, sl, trail.current_stop, size, _risk_pct,
                        rec.strategy_mode)
 
         log.info(

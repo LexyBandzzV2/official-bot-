@@ -83,6 +83,13 @@ PUSHOVER_USER_KEY:  str = os.getenv("PUSHOVER_USER_KEY", "")
 # ── Risk Parameters ───────────────────────────────────────────────────────────
 ACCOUNT_BALANCE:         float = float(os.getenv("ACCOUNT_BALANCE", "10000"))
 MAX_RISK_PER_TRADE:      float = float(os.getenv("MAX_RISK_PER_TRADE", "0.03"))   # 3 %
+
+# Per-timeframe risk overrides (override MAX_RISK_PER_TRADE for specific timeframe modes)
+RISK_PCT_SCALP_MICRO: float = float(os.getenv("RISK_PCT_SCALP_MICRO", "0.01"))   # 1m/3m — smaller, faster
+RISK_PCT_SCALP:       float = float(os.getenv("RISK_PCT_SCALP",       "0.03"))   # 5m — standard
+RISK_PCT_INTERMEDIATE:float = float(os.getenv("RISK_PCT_INTERMEDIATE","0.03"))   # 15m/1h — standard
+RISK_PCT_SWING:       float = float(os.getenv("RISK_PCT_SWING",       "0.02"))   # 4h — wider stops
+
 STOP_LOSS_PCT:           float = float(os.getenv("STOP_LOSS_PCT", "0.02"))        # 2 %
 MAX_DAILY_DRAWDOWN:      float = float(os.getenv("MAX_DAILY_DRAWDOWN", "0.10"))   # 10 %
 MAX_TRADES_PER_HOUR:     int   = int(os.getenv("MAX_TRADES_PER_HOUR", "15"))      # hard cap
@@ -295,6 +302,12 @@ SUITABILITY_MEDIUM_SCORE_PENALTY: float = float(
 SUITABILITY_LOW_SCORE_PENALTY: float = float(
     os.getenv("SUITABILITY_LOW_SCORE_PENALTY", "5.0")        # was 8.0
 )
+
+# ── Multi-Timeframe (MTF) trend filter ────────────────────────────────────────
+MTF_FILTER_ENABLED:   bool  = os.getenv("MTF_FILTER_ENABLED", "true").lower() in ("1", "true", "yes")
+MTF_BLOCK_COUNTER:    bool  = os.getenv("MTF_BLOCK_COUNTER", "true").lower() in ("1", "true", "yes")
+# When HTF opposes signal direction, reduce position size by this fraction (0.5 = 50%)
+MTF_COUNTER_SIZE_PCT: float = float(os.getenv("MTF_COUNTER_SIZE_PCT", "0.0"))  # 0 = block entirely
 
 # ── Final Sprint: Asset Universe & Prefilter Layer ────────────────────────────
 

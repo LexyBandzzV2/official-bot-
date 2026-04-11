@@ -166,13 +166,13 @@ TIMEFRAME_FINNHUB: dict[str, str] = {
 }
 
 TIMEFRAME_YFINANCE: dict[str, str] = {
-    "1m": "1m", "5m": "5m", "15m": "15m", "30m": "30m",
+    "1m": "1m", "2m": "2m", "5m": "5m", "15m": "15m", "30m": "30m",
     "1h": "1h", "1d": "1d", "1w": "1wk",
 }
 
 # Alpaca v2 timeframe strings: {N}{Min|Hour|Day|Week|Month}
 TIMEFRAME_ALPACA: dict[str, str] = {
-    "1m": "1Min", "3m": "3Min", "5m": "5Min", "15m": "15Min", "30m": "30Min",
+    "1m": "1Min", "2m": "3Min", "3m": "3Min", "5m": "5Min", "15m": "15Min", "30m": "30Min",
     "1h": "1Hour", "2h": "2Hour", "4h": "4Hour", "1d": "1Day", "1w": "1Week",
 }
 
@@ -553,7 +553,7 @@ def get_latest_candles(
             log.warning(f"IBKR fetch failed for {symbol}: {e}")
     
     tf_mins: dict[str, int] = {
-        "1m": 1, "3m": 3, "5m": 5, "15m": 15, "30m": 30,
+        "1m": 1, "2m": 2, "3m": 3, "5m": 5, "15m": 15, "30m": 30,
         "1h": 60, "2h": 120, "4h": 240, "1d": 1440, "1w": 10080,
     }
     mins_per_bar  = tf_mins.get(timeframe, 60)
@@ -586,6 +586,8 @@ def get_latest_candles(
             log.warning(f"Kraken WS failed: {e}")
 
     # Fallback to historical fetch
+    if is_crypto and timeframe not in supported_kraken_tfs:
+        log.info("Kraken WS does not support %s for %s — using CCXT REST fallback", timeframe, symbol)
     df = get_historical_ohlcv(symbol, timeframe, start=start, source=source)
     if df.empty:
         return df
