@@ -18,12 +18,13 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from src.scanner.asset_universe import is_meme, get_entry, UniverseGroup
+from src.config import PREFILTER_FLAT_MARKET_ATR_PCT, PREFILTER_FLAT_MARKET_ATR_PCT_MEME
 
 log = logging.getLogger(__name__)
 
 # Minimum ATR% to consider a market "alive" — below this it's essentially flat
-FLAT_MARKET_ATR_PCT      = 0.03   # 0.03% — catches truly sideways/no-movement charts
-FLAT_MARKET_ATR_PCT_MEME = 0.05   # slightly higher floor for meme coins
+FLAT_MARKET_ATR_PCT      = PREFILTER_FLAT_MARKET_ATR_PCT       # default 0.03% — catches truly sideways/no-movement charts
+FLAT_MARKET_ATR_PCT_MEME = PREFILTER_FLAT_MARKET_ATR_PCT_MEME  # default 0.05% — slightly higher floor for meme coins
 
 # Skip reason codes (kept for compatibility with funnel reporter)
 SKIP_LOW_VOLATILITY        = "blocked_by_low_volatility"

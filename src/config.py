@@ -70,10 +70,11 @@ FXCM_MAX_TRADES_PER_HOUR: int = int(os.getenv("FXCM_MAX_TRADES_PER_HOUR", "15"))
 IBKR_MAX_TRADES_PER_HOUR: int = int(os.getenv("IBKR_MAX_TRADES_PER_HOUR", "15"))
 
 # Enabled flags (placeholders until keys are configured)
-ALPACA_ENABLED: bool = os.getenv("ALPACA_ENABLED", "true").lower() in ("1", "true", "yes")
-KRAKEN_ENABLED: bool = os.getenv("KRAKEN_ENABLED", "true").lower() in ("1", "true", "yes")
-FXCM_ENABLED: bool = os.getenv("FXCM_ENABLED", "true").lower() in ("1", "true", "yes")
-IBKR_ENABLED: bool = os.getenv("IBKR_ENABLED", "true").lower() in ("1", "true", "yes")
+ALPACA_ENABLED:    bool = os.getenv("ALPACA_ENABLED",    "true").lower() in ("1", "true", "yes")
+KRAKEN_ENABLED:    bool = os.getenv("KRAKEN_ENABLED",    "true").lower() in ("1", "true", "yes")
+FXCM_ENABLED:      bool = os.getenv("FXCM_ENABLED",      "true").lower() in ("1", "true", "yes")
+IBKR_ENABLED:      bool = os.getenv("IBKR_ENABLED",      "true").lower() in ("1", "true", "yes")
+FP_MARKETS_ENABLED: bool = os.getenv("FP_MARKETS_ENABLED", "true").lower() in ("1", "true", "yes")
 
 # ── Notifications ─────────────────────────────────────────────────────────────
 PUSHOVER_APP_TOKEN: str = os.getenv("PUSHOVER_APP_TOKEN", "")
@@ -331,3 +332,8 @@ PREFILTER_TOP_N: int = int(os.getenv("PREFILTER_TOP_N", "25"))
 PREFILTER_QUALITY_FIRST: bool = (
     os.getenv("PREFILTER_QUALITY_FIRST", "false").lower() in ("1", "true", "yes")
 )
+
+# Flat-market ATR% floor — markets below this are considered dead and skipped.
+# Meme coins use a slightly higher floor to filter ghost ticks.
+PREFILTER_FLAT_MARKET_ATR_PCT:      float = float(os.getenv("PREFILTER_FLAT_MARKET_ATR_PCT",      "0.03"))
+PREFILTER_FLAT_MARKET_ATR_PCT_MEME: float = float(os.getenv("PREFILTER_FLAT_MARKET_ATR_PCT_MEME", "0.05"))

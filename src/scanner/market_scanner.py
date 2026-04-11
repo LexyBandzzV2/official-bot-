@@ -316,11 +316,16 @@ class MarketScanner:
 
                 # Freshness check: skip symbols whose last candle is too old.
                 if DATA_FRESHNESS_MULTIPLIER > 0 and "time" in raw_df.columns:
-                    from datetime import timezone as _tz_mod
                     _last_ts = raw_df["time"].iloc[-1]
-                    _now_utc = datetime.now(_tz_mod.utc)
-                    if hasattr(_last_ts, "tzinfo") and _last_ts.tzinfo is None:
-                        _last_ts = _last_ts.replace(tzinfo=_tz_mod.utc)
+                    _now_utc = datetime.now(timezone.utc)
+                    # Normalize _last_ts to UTC-aware regardless of source timezone:
+                    # - naive (no tzinfo)  → assume UTC
+                    # - aware, non-UTC     → convert to UTC
+                    # - already UTC-aware  → use as-is
+                    if getattr(_last_ts, "tzinfo", None) is None:
+                        _last_ts = _last_ts.replace(tzinfo=timezone.utc)
+                    else:
+                        _last_ts = _last_ts.astimezone(timezone.utc)
                     _age_s = (_now_utc - _last_ts).total_seconds()
                     if _age_s > _stale_limit_s:
                         log.warning(

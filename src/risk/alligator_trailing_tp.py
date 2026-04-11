@@ -30,7 +30,7 @@ class AlligatorTrailingTP:
         direction: str,      # 'buy' or 'sell'
         entry_price: float,
         initial_lips: float,
-        min_profit_pct: float = 0.01,  # Minimum 1% profit before TP activates
+        min_profit_pct: float = 0.005,  # Minimum 0.5% profit before TP activates (suits 1m/3m scalp timeframes)
     ) -> None:
         """Initialize trailing take profit.
         

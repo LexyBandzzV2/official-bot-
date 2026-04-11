@@ -25,7 +25,7 @@ try:
     from src.config import (
         TRADING_MODE,
         BROKER_PREFERENCE,
-        ALPACA_ENABLED, KRAKEN_ENABLED, FXCM_ENABLED, IBKR_ENABLED,
+        ALPACA_ENABLED, KRAKEN_ENABLED, FXCM_ENABLED, IBKR_ENABLED, FP_MARKETS_ENABLED,
         ALPACA_MAX_TRADES_PER_HOUR, KRAKEN_MAX_TRADES_PER_HOUR,
         FXCM_MAX_TRADES_PER_HOUR, IBKR_MAX_TRADES_PER_HOUR,
         FP_MARKETS_LOGIN,
@@ -83,7 +83,7 @@ class BrokerRouter:
             return self._connect_preferred_only()
         # Connect all adapters as needed (placeholders may fail gracefully)
         fp_ok = False
-        if FP_MARKETS_LOGIN:
+        if FP_MARKETS_ENABLED and FP_MARKETS_LOGIN:
             fp_ok = self._fp_adapter.connect()
         alpaca_ok = False
         kraken_ok = False
@@ -161,6 +161,9 @@ class BrokerRouter:
                 self._connected = False
                 return False
         if broker == "fp":
+            if not FP_MARKETS_ENABLED:
+                log.warning("Preferred broker fp is disabled")
+                return False
             self._connected = bool(FP_MARKETS_LOGIN and self._fp_adapter.connect())
             return self._connected
         log.warning("Unknown preferred broker: %s", broker)
@@ -419,7 +422,10 @@ class BrokerRouter:
             except Exception:
                 pass
         if mgr is None or broker_name is None:
-            log.error("No broker adapter for %s", symbol)
+            log.error(
+                "No broker available to place order for %s %s — check broker credentials and ENABLED flags",
+                signal_type, symbol,
+            )
             return None
         if not self._cap_allows(broker_name):
             log.warning("Broker %s hourly cap reached — refusing order for %s", broker_name, symbol)

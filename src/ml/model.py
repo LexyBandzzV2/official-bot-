@@ -124,8 +124,21 @@ def _get_lgb() -> Optional[Any]:
 
 
 def is_model_available() -> bool:
-    """Return True if at least one trained model exists."""
-    return (_XGB_AVAILABLE and _XGB_PATH.exists()) or (_LGB_AVAILABLE and _LGB_PATH.exists())
+    """Return True only if all model files exist AND are loadable."""
+    if not (_XGB_PATH.exists() and _LGB_PATH.exists() and _SCALER_PATH.exists()):
+        return False
+    # Validate that each file is actually loadable (catches corruption)
+    try:
+        if _XGB_AVAILABLE:
+            _bst = xgb.Booster()
+            _bst.load_model(str(_XGB_PATH))
+        if _LGB_AVAILABLE:
+            lgb.Booster(model_file=str(_LGB_PATH))
+        if _JOBLIB_AVAILABLE:
+            joblib.load(_SCALER_PATH)
+        return True
+    except Exception:
+        return False
 
 
 def _maybe_flush_health(model_type: str, is_loaded: bool) -> None:
