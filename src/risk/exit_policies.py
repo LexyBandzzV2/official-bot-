@@ -159,68 +159,73 @@ class ExitPolicy:
 # ─────────────────────────────────────────────────────────────────────────────
 
 # 3m / 5m scalp: target 1–6% moves; trail with ATR after stage 2.
+# Lock ratios: Stage1=47%, Stage2=67%, Stage3=75% of the move secured.
 ScalpExitPolicy = ExitPolicy(
     name               = "SCALP",
-    giveback_frac      = 0.40,   # allow 60% of move to develop (was 0.45)
-    break_even_pct     = 0.60,   # arm break-even at +0.60% — avoids arming on noise
+    giveback_frac      = 0.35,   # exit when 35% of peak retraces — keeps 65% of move
+    break_even_pct     = 0.50,   # arm break-even at +0.50% (was 0.60 — arm sooner)
     min_mfe_pct        = 0.008,  # peak must reach +0.8% before giveback can fire
     profit_lock_stages = [
-        (1.50, 0.50),   # Stage 1: reach +1.50% → lock +0.50% above entry
-        (3.00, 1.50),   # Stage 2: reach +3.00% → lock +1.50% | ATR trail eligible
-        (6.00, 3.00),   # Stage 3: reach +6.00% → lock +3.00%
+        (1.50, 0.70),   # Stage 1: reach +1.50% → lock +0.70% (47% secured, was 33%)
+        (3.00, 2.00),   # Stage 2: reach +3.00% → lock +2.00% (67% secured, was 50%) | ATR trail eligible
+        (6.00, 4.50),   # Stage 3: reach +6.00% → lock +4.50% (75% secured, was 50%)
     ],
     trail_mode               = "atr",
-    atr_multiplier           = 1.2,
+    atr_multiplier           = 1.0,   # tighter ATR trail (was 1.2)
     atr_eligible_after_stage = 2,
     momentum_fade_window     = 3,
-    fade_confirmation_bars   = 2,
-    fade_tighten_frac        = 0.30,
+    fade_confirmation_bars   = 1,     # act on first weak candle (was 2 — too slow for scalp)
+    fade_tighten_frac        = 0.25,  # tighter fade stop (was 0.30)
 )
 
 # 1m micro-scalp: faster timeframe — tighter stages but still targeting real moves.
+# Lock ratios: Stage1=47%, Stage2=67%, Stage3=75%.
 ScalpMicroExitPolicy = ExitPolicy(
     name               = "SCALP_1M",
-    giveback_frac      = 0.40,   # allow 60% of move before exit
-    break_even_pct     = 0.40,   # arm break-even at +0.40%
+    giveback_frac      = 0.35,   # exit when 35% of peak retraces (was 0.40)
+    break_even_pct     = 0.30,   # arm break-even at +0.30% (was 0.40 — arm sooner)
     min_mfe_pct        = 0.005,  # peak must reach +0.5% before giveback can fire
     profit_lock_stages = [
-        (0.75, 0.25),   # Stage 1: reach +0.75% → lock +0.25%
-        (1.50, 0.75),   # Stage 2: reach +1.50% → lock +0.75% | ATR trail eligible
-        (3.00, 1.50),   # Stage 3: reach +3.00% → lock +1.50%
+        (0.75, 0.35),   # Stage 1: reach +0.75% → lock +0.35% (47% secured, was 33%)
+        (1.50, 1.00),   # Stage 2: reach +1.50% → lock +1.00% (67% secured, was 50%) | ATR trail eligible
+        (3.00, 2.25),   # Stage 3: reach +3.00% → lock +2.25% (75% secured, was 50%)
     ],
     trail_mode               = "atr",
-    atr_multiplier           = 1.2,
+    atr_multiplier           = 1.0,   # tight ATR trail (was 1.2)
     atr_eligible_after_stage = 2,
     momentum_fade_window     = 3,
-    fade_confirmation_bars   = 2,
-    fade_tighten_frac        = 0.30,
+    fade_confirmation_bars   = 1,     # 1m moves fast — act on first weak candle
+    fade_tighten_frac        = 0.20,  # very tight fade stop on 1m
 )
 
 # 15m / 1h intermediate: target 2–8% moves; candle trail keeps momentum alive.
+# Lock ratios: Stage1=50%, Stage2=69%, Stage3=75%.
 IntermediateExitPolicy = ExitPolicy(
     name               = "INTERMEDIATE",
-    giveback_frac      = 0.40,   # allow 60% retracement before exit
-    break_even_pct     = 1.00,   # arm break-even at +1.00%
+    giveback_frac      = 0.35,   # exit when 35% of peak retraces (was 0.40)
+    break_even_pct     = 0.80,   # arm break-even at +0.80% (was 1.00 — arm sooner)
     min_mfe_pct        = 0.012,  # peak must reach +1.2% before giveback fires
     profit_lock_stages = [
-        (2.00, 0.75),   # Stage 1: reach +2.00% → lock +0.75%
-        (4.00, 2.00),   # Stage 2: reach +4.00% → lock +2.00%
-        (8.00, 4.00),   # Stage 3: reach +8.00% → lock +4.00%
+        (2.00, 1.00),   # Stage 1: reach +2.00% → lock +1.00% (50% secured, was 38%)
+        (4.00, 2.75),   # Stage 2: reach +4.00% → lock +2.75% (69% secured, was 50%)
+        (8.00, 6.00),   # Stage 3: reach +8.00% → lock +6.00% (75% secured, was 50%)
     ],
     trail_mode           = "candle",
     momentum_fade_window = 3,
+    fade_confirmation_bars = 2,   # 15m/1h: 2-bar confirmation appropriate (each bar = 15-60 min)
 )
 
 # 2h / 4h swing: target 5–20% moves; wide room to run full trend.
+# Lock ratios: Stage1=50%, Stage2=69%, Stage3=77%.
 SwingExitPolicy = ExitPolicy(
     name               = "SWING",
-    giveback_frac      = 0.38,   # allow 62% of move; trail tightly once locked
-    break_even_pct     = 1.50,   # arm break-even at +1.50%
+    giveback_frac      = 0.32,   # exit when 32% of peak retraces — keeps 68% (was 0.38)
+    break_even_pct     = 1.20,   # arm break-even at +1.20% (was 1.50 — arm sooner)
     min_mfe_pct        = 0.018,  # peak must reach +1.8% before giveback fires
     profit_lock_stages = [
-        (4.00, 1.50),   # Stage 1: reach +4.00% → lock +1.50%
-        (8.00, 4.00),   # Stage 2: reach +8.00% → lock +4.00%
-        (15.00, 8.00),  # Stage 3: reach +15.00% → lock +8.00%
+        (4.00,  2.00),   # Stage 1: reach +4.00%  → lock +2.00%  (50% secured, was 38%)
+        (8.00,  5.50),   # Stage 2: reach +8.00%  → lock +5.50%  (69% secured, was 50%)
+        (15.00, 11.50),  # Stage 3: reach +15.00% → lock +11.50% (77% secured, was 53%)
     ],
     trail_mode           = "candle",
     momentum_fade_window = 0,   # disabled — too noisy on higher timeframes
