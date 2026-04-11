@@ -73,6 +73,9 @@ try:
     from src.display.tables        import (
         print_buy_signal, print_sell_signal, print_trade_closed, print_kill_switch,
         print_active_signals, print_trail_update,
+        print_trailing_stop_update, print_break_even_armed, print_profit_stage_locked,
+        print_pyramid_trigger, print_mtf_block, print_regime_change_during_trade,
+        print_scan_cycle_start,
     )
     from src.notifications.logger  import (
         log_signal, log_trade_open, log_trade_close, log_rejection, log_kill_switch,
@@ -155,6 +158,44 @@ def _risk_pct_for_timeframe(timeframe: str) -> float:
     return tf_map.get(timeframe, RISK_PCT_INTERMEDIATE)
 
 
+class LiveBalanceTracker:
+    """Tracks running account balance for compounding position sizes.
+
+    Starts at the configured ACCOUNT_BALANCE and adjusts after each trade closes.
+    Uses in-memory tracking (resets on restart). The compounding effect means
+    winning streaks automatically increase position sizes for faster account growth.
+    """
+
+    def __init__(self, starting_balance: float) -> None:
+        self._balance = starting_balance
+        self._starting = starting_balance
+        self._total_pnl = 0.0
+        self._trade_count = 0
+
+    @property
+    def balance(self) -> float:
+        return self._balance
+
+    def record_trade(self, pnl_dollars: float, symbol: str) -> None:
+        """Update balance after a trade closes."""
+        self._balance = max(self._balance + pnl_dollars, 1.0)  # floor at $1 to prevent zero
+        self._total_pnl += pnl_dollars
+        self._trade_count += 1
+        direction = "+" if pnl_dollars >= 0 else ""
+        log.info(
+            "BALANCE UPDATE | %s%s%.2f | Running: $%.2f | Total PnL: %s$%.2f (%d trades)",
+            direction, "$" if pnl_dollars >= 0 else "-$", abs(pnl_dollars),
+            self._balance,
+            "+" if self._total_pnl >= 0 else "",
+            self._total_pnl,
+            self._trade_count,
+        )
+
+    def growth_pct(self) -> float:
+        """Return total growth % from starting balance."""
+        return (self._balance - self._starting) / self._starting * 100.0
+
+
 class MarketScanner:
     """Real-time market monitoring and signal detection engine."""
 
@@ -185,6 +226,7 @@ class MarketScanner:
             max_trades_per_hour      = MAX_TRADES_PER_HOUR,
             max_positions_per_class  = MAX_POSITIONS_PER_CLASS,
         )
+        self._live_balance = LiveBalanceTracker(account_balance)
         # trade_id → (TradeRecord, TrailingStop, optional PeakGiveback, optional AlligatorTrailingTP)
         self._open: dict[str, tuple[TradeRecord, TrailingStop, Optional[PeakGiveback], Optional[AlligatorTrailingTP]]] = {}
         self._pyramid_mgr = PyramidManager()
@@ -195,6 +237,7 @@ class MarketScanner:
         self._candidate_logger = get_trade_candidate_logger()
         # Phase 11: per-(symbol, timeframe) regime snapshot cache for change detection
         self._regime_cache: dict[str, Any] = {}   # key: "symbol|timeframe" → RegimeSnapshot
+        self._scan_cycle_count: int = 0  # running count of completed scan cycles for display
         # Phase 14: suitability resolver (one instance shared across all symbols per scan loop)
         self._suitability_resolver: Any = (
             _SuitabilityResolverClass() if _SUITABILITY_AVAILABLE and _SuitabilityResolverClass else None
@@ -301,11 +344,37 @@ class MarketScanner:
             log.debug("_classify_regime failed for %s: %s", sym, exc)
             return None
 
+    # ── Market-hours helpers ──────────────────────────────────────────────────
+
+    def _is_stock_market_hours(self) -> bool:
+        """Return True if current time is within regular US stock market hours.
+
+        Crypto trades 24/7 so this only matters for stock/ETF assets.
+        Returns True on any error so we fail-open rather than blocking trading.
+        """
+        try:
+            from datetime import time as dtime
+            eastern = pytz.timezone("America/New_York")
+            now_et = datetime.now(eastern)
+            market_open  = dtime(9, 30)   # 9:30 AM ET
+            market_close = dtime(16, 0)   # 4:00 PM ET
+            if now_et.weekday() >= 5:     # Saturday=5, Sunday=6
+                return False
+            return market_open <= now_et.time() <= market_close
+        except Exception:
+            return True  # fail-open if timezone check fails
+
     # ── Single scan cycle ─────────────────────────────────────────────────────
 
     def _scan_once(self) -> None:
         now_str = datetime.now(_tz).strftime("%Y-%m-%d %I:%M:%S %p %Z")
+        self._scan_cycle_count += 1
+        print_scan_cycle_start(self.timeframe, len(self.symbols), self._scan_cycle_count)
         log.info("Scan cycle starting at %s for %d symbols", now_str, len(self.symbols))
+        log.info("Live balance: $%.2f (%.1f%% growth from $%.2f starting)",
+                 self._live_balance.balance,
+                 self._live_balance.growth_pct(),
+                 self._live_balance._starting)
 
         # Opportunistic auto-retrain (never blocks scanning)
         try:
@@ -443,6 +512,16 @@ class MarketScanner:
                 continue
             if not self.risk_manager.can_open_trade():
                 break   # hit hourly or daily limit
+
+            # Session filter: stocks and ETFs only trade during regular US market hours.
+            # Crypto runs 24/7, so this check is skipped for non-equity asset classes.
+            _asset_cls = get_asset_class(sym)
+            if _asset_cls in ("stock", "etf") and not self._is_stock_market_hours():
+                log.debug(
+                    "Skipping %s — outside market hours (stock/ETF only trades 9:30–4:00 PM ET)",
+                    sym,
+                )
+                continue
 
             try:
                 self._evaluate_symbol(sym, ha_df)
@@ -665,9 +744,12 @@ class MarketScanner:
                 from src.signals.mtf_filter import check_mtf_alignment, get_higher_timeframe
                 _mtf = check_mtf_alignment(sym, self.timeframe, sig.signal_type.lower())
                 if _mtf == "COUNTER" and MTF_BLOCK_COUNTER:
+                    _htf_label = get_higher_timeframe(self.timeframe) or "HTF"
+                    _htf_dir = "BEARISH" if sig.signal_type.upper() == "BUY" else "BULLISH"
+                    print_mtf_block(sym, sig.signal_type, self.timeframe, _htf_label, _htf_dir)
                     log.info(
                         "MTF BLOCK %s %s — signal opposes %s trend",
-                        sig.signal_type, sym, get_higher_timeframe(self.timeframe),
+                        sig.signal_type, sym, _htf_label,
                     )
                     self._reject_signal(sig, ha_df, "MTF_COUNTER")
                     continue
@@ -745,7 +827,7 @@ class MarketScanner:
             sl = round(entry * (1.0 + _dynamic_stop_pct), 6)
 
         size   = calculate_position_size(
-            self.risk_manager.account_balance, entry, sl,
+            self._live_balance.balance, entry, sl,
             risk_pct=_risk_pct_for_timeframe(self.timeframe),
         )
         if size <= 0:
@@ -1004,6 +1086,12 @@ class MarketScanner:
                 rec.trailing_stop = new_stop
                 rec.trail_update_reason = "candle_trail"
                 
+                _unreal_pct = (
+                    (close_price - rec.entry_price) / rec.entry_price * 100.0
+                    if rec.signal_type == "BUY"
+                    else (rec.entry_price - close_price) / rec.entry_price * 100.0
+                )
+                print_trailing_stop_update(rec.asset, rec.signal_type, old_stop, new_stop, close_price, _unreal_pct)
                 print_trail_update(rec.asset, old_stop, new_stop, rec.signal_type)
                 log_trail_update_full(tid, rec.asset, old_stop, new_stop, "candle_trail", close_price)
                 save_lifecycle_event(
@@ -1074,6 +1162,12 @@ class MarketScanner:
                             if not rec.regime_changed_during_trade:
                                 rec.regime_changed_during_trade = True
                                 rec.regime_transition_count = 1
+                                _regime_conf = getattr(_current_ctx, "confidence_score", 0.0) or 0.0
+                                print_regime_change_during_trade(
+                                    rec.asset, tid,
+                                    rec.regime_label_at_entry, _current_label,
+                                    _regime_conf,
+                                )
                                 log.info(
                                     "Regime transition during trade %s: %s → %s",
                                     tid, rec.regime_label_at_entry, _current_label,
@@ -1102,6 +1196,7 @@ class MarketScanner:
                 rec.trail_active_mode = "break_even"
                 rec.exit_policy_name  = policy_state_name(_policy.name, "BREAK_EVEN")
                 log_trail_update_full(tid, rec.asset, _old_trail, _be_level, "break_even", close_price)
+                print_break_even_armed(rec.asset, rec.signal_type, rec.entry_price, _be_level)
                 log_break_even_armed(tid, rec.asset, rec.entry_price, close_price, unrealized_pct)
                 save_lifecycle_event(
                     tid, "break_even_armed",
@@ -1146,6 +1241,7 @@ class MarketScanner:
                 rec.trail_active_mode = f"stage_{_next_stage}"
                 rec.exit_policy_name  = policy_state_name(_policy.name, _stage_state)
                 log_trail_update_full(tid, rec.asset, _old_trail, _lock_level, _reason, close_price)
+                print_profit_stage_locked(rec.asset, rec.signal_type, _next_stage, unrealized_pct, _lock_pct)
                 log_profit_lock_stage(tid, rec.asset, _next_stage, _lock_pct, close_price, unrealized_pct)
                 save_lifecycle_event(
                     tid, "profit_lock_stage",
@@ -1299,13 +1395,14 @@ class MarketScanner:
                     if self.risk_manager.can_pyramid(rec.asset):
                         _py_stop = rec.stop_loss_hard  # use original hard stop as pyramid stop
                         _py_size = PyramidManager.pyramid_position_size(
-                            account_balance=self.risk_manager.account_balance,
+                            account_balance=self._live_balance.balance,
                             entry_price=_close_price,
                             stop_loss_price=_py_stop,
                             risk_pct=PYRAMID_RISK_PCT,
                             leverage=PYRAMID_LEVERAGE,
                         )
                         if _py_size > 0:
+                            print_pyramid_trigger(rec.asset, rec.signal_type, PYRAMID_TRIGGER_PCT, _py_size, PYRAMID_LEVERAGE)
                             log.info(
                                 "PYRAMID TRIGGER %s %s — trade %.1f%% in profit, "
                                 "scaling in %.6f units (%.1fx leverage)",
@@ -1378,6 +1475,7 @@ class MarketScanner:
                     rec.exit_policy_name = policy_state_name(_policy_at_close.name, "INITIAL_STOP")
 
             self.risk_manager.record_closed_pnl(tid, pnl)
+            self._live_balance.record_trade(pnl, rec.asset)
 
             # Phase 12: capture regime at exit and transition tracking
             if _REGIME_AVAILABLE:

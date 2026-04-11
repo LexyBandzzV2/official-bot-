@@ -349,6 +349,180 @@ def print_pnl_summary(rows: list) -> None:
     console.print(t)
 
 
+# ── Trailing stop ratchet notification ───────────────────────────────────────
+
+def print_trailing_stop_update(
+    symbol: str,
+    direction: str,
+    old_stop: float,
+    new_stop: float,
+    current_price: float,
+    unrealized_pct: float,
+) -> None:
+    """Print a compact trailing stop ratchet notification as a colored panel."""
+    ts = datetime.now(_tz).strftime("%I:%M:%S %p")
+    arrow = "[A]" if direction.upper() == "BUY" else "[V]"
+    arrow_col = "green" if direction.upper() == "BUY" else "red"
+    pnl_col = "green" if unrealized_pct >= 0.5 else "yellow"
+    sign = "+" if unrealized_pct >= 0 else ""
+    content = (
+        f"[dim]{ts}[/dim]  [{arrow_col}]{arrow} {symbol}[/{arrow_col}]  "
+        f"Stop: [yellow]{_fmt_price(old_stop)}[/yellow] -> [bold green]{_fmt_price(new_stop)}[/bold green]  "
+        f"Price: [white]{_fmt_price(current_price)}[/white]  "
+        f"Unrealized: [{pnl_col}]{sign}{unrealized_pct:.2f}%[/{pnl_col}]"
+    )
+    console.print(Panel(
+        content,
+        title="[bold cyan]TRAIL RATCHET[/bold cyan]",
+        border_style="cyan",
+        expand=False,
+        padding=(0, 1),
+    ))
+
+
+# ── Break-even armed notification ─────────────────────────────────────────────
+
+def print_break_even_armed(
+    symbol: str,
+    direction: str,
+    entry_price: float,
+    stop_moved_to: float,
+) -> None:
+    """Print a small panel when break-even stop is armed."""
+    ts = datetime.now(_tz).strftime("%I:%M:%S %p")
+    dir_col = "green" if direction.upper() == "BUY" else "red"
+    content = (
+        f"[dim]{ts}[/dim]  [bold cyan][BE] BREAK-EVEN ARMED[/bold cyan]  "
+        f"[{dir_col}]{symbol} {direction.upper()}[/{dir_col}]  "
+        f"Entry: [yellow]{_fmt_price(entry_price)}[/yellow]  "
+        f"Stop moved to: [bold green]{_fmt_price(stop_moved_to)}[/bold green]"
+    )
+    console.print(Panel(
+        content,
+        title="[bold cyan][BE] BREAK-EVEN ARMED[/bold cyan]",
+        border_style="cyan",
+        expand=False,
+        padding=(0, 1),
+    ))
+
+
+# ── Profit lock stage notification ────────────────────────────────────────────
+
+def print_profit_stage_locked(
+    symbol: str,
+    direction: str,
+    stage: int,
+    profit_pct: float,
+    locked_pct: float,
+) -> None:
+    """Print a green panel when a profit lock stage is reached."""
+    ts = datetime.now(_tz).strftime("%I:%M:%S %p")
+    dir_col = "green" if direction.upper() == "BUY" else "red"
+    content = (
+        f"[dim]{ts}[/dim]  [{dir_col}]{symbol} {direction.upper()}[/{dir_col}]  "
+        f"Profit: [bold green]+{profit_pct:.1f}%[/bold green]  "
+        f"Floor locked at: [bold yellow]+{locked_pct:.1f}%[/bold yellow]"
+    )
+    console.print(Panel(
+        content,
+        title=f"[bold green][LK] STAGE {stage} LOCKED[/bold green]",
+        border_style="green",
+        expand=False,
+        padding=(0, 1),
+    ))
+
+
+# ── Pyramid entry notification ────────────────────────────────────────────────
+
+def print_pyramid_trigger(
+    symbol: str,
+    direction: str,
+    base_profit_pct: float,
+    scale_in_units: float,
+    leverage: float,
+) -> None:
+    """Print a bright yellow/gold panel when a pyramid scale-in is triggered."""
+    ts = datetime.now(_tz).strftime("%I:%M:%S %p")
+    dir_col = "green" if direction.upper() == "BUY" else "red"
+    content = (
+        f"[dim]{ts}[/dim]  [{dir_col}]{symbol} {direction.upper()}[/{dir_col}]  "
+        f"Triggered at: [bold green]+{base_profit_pct:.1f}%[/bold green]  "
+        f"Units added: [bold white]{scale_in_units:.6f}[/bold white]  "
+        f"Leverage: [bold yellow]{leverage:.1f}x[/bold yellow]"
+    )
+    console.print(Panel(
+        content,
+        title="[bold yellow][*] PYRAMID ENTRY - SCALE IN[/bold yellow]",
+        border_style="yellow",
+        expand=False,
+        padding=(0, 1),
+    ))
+
+
+# ── MTF block notification ────────────────────────────────────────────────────
+
+def print_mtf_block(
+    symbol: str,
+    direction: str,
+    base_tf: str,
+    htf: str,
+    htf_direction: str,
+) -> None:
+    """Print an orange panel when a signal is blocked by multi-timeframe filter."""
+    ts = datetime.now(_tz).strftime("%I:%M:%S %p")
+    dir_col = "green" if direction.upper() == "BUY" else "red"
+    content = (
+        f"[dim]{ts}[/dim]  [bold][X] MTF BLOCKED[/bold]  "
+        f"[{dir_col}]{symbol} {direction.upper()}[/{dir_col}] on [white]{base_tf}[/white]  "
+        f"opposes [yellow]{htf}[/yellow] trend ([bold]{htf_direction}[/bold])"
+    )
+    console.print(Panel(
+        content,
+        title="[bold][X] MTF BLOCKED[/bold]",
+        border_style="yellow",
+        expand=False,
+        padding=(0, 1),
+    ))
+
+
+# ── Regime change during trade notification ───────────────────────────────────
+
+def print_regime_change_during_trade(
+    symbol: str,
+    trade_id: str,
+    old_regime: str,
+    new_regime: str,
+    conf: float,
+) -> None:
+    """Print a yellow warning panel when regime shifts while a trade is open."""
+    ts = datetime.now(_tz).strftime("%I:%M:%S %p")
+    content = (
+        f"[dim]{ts}[/dim]  [bold cyan]{symbol}[/bold cyan]  "
+        f"Trade: [dim]{trade_id}[/dim]  "
+        f"[yellow]{old_regime}[/yellow] -> [bold white]{new_regime}[/bold white]  "
+        f"conf=[bold]{conf:.0%}[/bold]"
+    )
+    console.print(Panel(
+        content,
+        title="[bold yellow][!] REGIME SHIFT - TRADE ACTIVE[/bold yellow]",
+        border_style="yellow",
+        expand=False,
+        padding=(0, 1),
+    ))
+
+
+# ── Scan cycle start divider ──────────────────────────────────────────────────
+
+def print_scan_cycle_start(timeframe: str, symbol_count: int, cycle_num: int) -> None:
+    """Print a subtle dim rule/divider at the start of each scan cycle."""
+    from rich.rule import Rule
+    ts = datetime.now(_tz).strftime("%I:%M:%S %p %Z")
+    label = (
+        f"[dim]Scan #{cycle_num}  |  {timeframe}  |  {symbol_count} symbols  |  {ts}[/dim]"
+    )
+    console.print(Rule(label, style="dim"))
+
+
 # ── Internal helper ───────────────────────────────────────────────────────────
 
 def _asset_class_label(symbol: str, plain: bool = False) -> str:

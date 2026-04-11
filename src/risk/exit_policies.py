@@ -163,7 +163,7 @@ class ExitPolicy:
 ScalpExitPolicy = ExitPolicy(
     name               = "SCALP",
     giveback_frac      = 0.35,   # exit when 35% of peak retraces — keeps 65% of move
-    break_even_pct     = 0.50,   # arm break-even at +0.50% (was 0.60 — arm sooner)
+    break_even_pct     = 1.40,   # arm break-even at +1.40% — just below Stage 1 lock
     min_mfe_pct        = 0.008,  # peak must reach +0.8% before giveback can fire
     profit_lock_stages = [
         (1.50, 0.70),   # Stage 1: reach +1.50% → lock +0.70% (47% secured, was 33%)
@@ -183,7 +183,7 @@ ScalpExitPolicy = ExitPolicy(
 ScalpMicroExitPolicy = ExitPolicy(
     name               = "SCALP_1M",
     giveback_frac      = 0.35,   # exit when 35% of peak retraces (was 0.40)
-    break_even_pct     = 0.30,   # arm break-even at +0.30% (was 0.40 — arm sooner)
+    break_even_pct     = 0.65,   # arm break-even at +0.65% — just below Stage 1 lock
     min_mfe_pct        = 0.005,  # peak must reach +0.5% before giveback can fire
     profit_lock_stages = [
         (0.75, 0.35),   # Stage 1: reach +0.75% → lock +0.35% (47% secured, was 33%)
@@ -203,7 +203,7 @@ ScalpMicroExitPolicy = ExitPolicy(
 IntermediateExitPolicy = ExitPolicy(
     name               = "INTERMEDIATE",
     giveback_frac      = 0.35,   # exit when 35% of peak retraces (was 0.40)
-    break_even_pct     = 0.80,   # arm break-even at +0.80% (was 1.00 — arm sooner)
+    break_even_pct     = 1.80,   # arm break-even at +1.80% — just below Stage 1 lock
     min_mfe_pct        = 0.012,  # peak must reach +1.2% before giveback fires
     profit_lock_stages = [
         (2.00, 1.00),   # Stage 1: reach +2.00% → lock +1.00% (50% secured, was 38%)
@@ -220,7 +220,7 @@ IntermediateExitPolicy = ExitPolicy(
 SwingExitPolicy = ExitPolicy(
     name               = "SWING",
     giveback_frac      = 0.32,   # exit when 32% of peak retraces — keeps 68% (was 0.38)
-    break_even_pct     = 1.20,   # arm break-even at +1.20% (was 1.50 — arm sooner)
+    break_even_pct     = 3.50,   # arm break-even at +3.50% — just below Stage 1 lock
     min_mfe_pct        = 0.018,  # peak must reach +1.8% before giveback fires
     profit_lock_stages = [
         (4.00,  2.00),   # Stage 1: reach +4.00%  → lock +2.00%  (50% secured, was 38%)

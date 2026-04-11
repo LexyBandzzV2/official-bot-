@@ -17,6 +17,21 @@ from typing import Optional
 
 log = logging.getLogger(__name__)
 
+# Alpaca paper trading supports only a limited set of crypto pairs.
+# Routing unsupported pairs to Alpaca causes "Broker order rejected" errors.
+_ALPACA_CRYPTO_SUPPORTED: frozenset[str] = frozenset({
+    "BTCUSD", "ETHUSD", "SOLUSD", "AVAXUSD", "LINKUSD", "DOGEUSD",
+    "LTCUSD", "BCHUSD", "SHIBUSD", "UNIUSD", "AAVEUSD", "BATUSD",
+    "MATICUSD", "MKRUSD", "CROUSD", "YFIUSD",
+})
+
+
+def _alpaca_supports_crypto(symbol: str) -> bool:
+    """Return True if Alpaca paper trading supports this crypto symbol."""
+    # Normalise to uppercase and strip slashes (e.g. "INJ/USD" → "INJUSD")
+    normalised = symbol.upper().replace("/", "").replace("-", "")
+    return normalised in _ALPACA_CRYPTO_SUPPORTED
+
 
 try:
     from src.execution.fp_markets_adapter import FPMarketsAdapter
@@ -249,7 +264,7 @@ class BrokerRouter:
                 self._alpaca_adapter = self._alpaca_adapter or _lazy_import_alpaca()
                 if self._alpaca_adapter.connect():
                     return ("alpaca", self._alpaca_adapter)
-            if asset_class == "crypto" and ALPACA_ENABLED:
+            if asset_class == "crypto" and ALPACA_ENABLED and _alpaca_supports_crypto(symbol):
                 self._alpaca_adapter = self._alpaca_adapter or _lazy_import_alpaca()
                 if self._alpaca_adapter.connect():
                     return ("alpaca", self._alpaca_adapter)
@@ -279,10 +294,16 @@ class BrokerRouter:
                 self._kraken_adapter = self._kraken_adapter or _lazy_import_kraken()
                 if self._kraken_adapter.connect():
                     return ("kraken", self._kraken_adapter)
-            if ALPACA_ENABLED:
+            if ALPACA_ENABLED and _alpaca_supports_crypto(symbol):
                 self._alpaca_adapter = self._alpaca_adapter or _lazy_import_alpaca()
                 if self._alpaca_adapter.connect():
                     return ("alpaca", self._alpaca_adapter)
+            if ALPACA_ENABLED and not _alpaca_supports_crypto(symbol):
+                log.warning(
+                    "Crypto pair %s is not supported by Alpaca and Kraken is not configured — "
+                    "skipping order to avoid broker rejection",
+                    symbol,
+                )
             if FP_MARKETS_LOGIN and self._fp_adapter.connect():
                 return ("fp", self._fp_mgr)
             return (None, None)
@@ -327,6 +348,13 @@ class BrokerRouter:
             if asset_class not in ("stock", "crypto"):
                 return (None, None)
             if not ALPACA_ENABLED:
+                return (None, None)
+            # Reject unsupported crypto pairs before hitting the Alpaca API
+            if asset_class == "crypto" and not _alpaca_supports_crypto(symbol):
+                log.warning(
+                    "Crypto pair %s is not supported by Alpaca paper trading — skipping order",
+                    symbol,
+                )
                 return (None, None)
             self._alpaca_adapter = self._alpaca_adapter or _lazy_import_alpaca()
             if self._alpaca_adapter.connect():
