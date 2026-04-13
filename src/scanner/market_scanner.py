@@ -172,9 +172,17 @@ class MarketScanner:
             try:
                 from src.execution.broker_router import BrokerRouter
                 self._broker = BrokerRouter(dry_run=False, preferred_broker=self.execution_broker)
-                if not self._broker.connect():
-                    log.warning("Broker connect failed — live orders disabled for this session")
-                    self._broker = None
+                _conn_ok = self._broker.connect()
+                if _conn_ok:
+                    log.info("Broker connected: %s", self.execution_broker or "auto")
+                else:
+                    # Keep the broker object — it will retry connect() at order time.
+                    # Nulling it here would permanently disable execution for the session.
+                    log.warning(
+                        "Broker initial connect failed for '%s' — will retry at order time. "
+                        "Check ALPACA_API_KEY / ALPACA_SECRET_KEY / ALPACA_BASE_URL in .env",
+                        self.execution_broker or "auto",
+                    )
             except Exception as e:
                 log.warning("Broker init failed: %s — live orders disabled", e)
                 self._broker = None
@@ -394,6 +402,10 @@ class MarketScanner:
         elif _sell_sig and getattr(_sell_sig, "is_valid", False): _status_sig_type = "SELL"
         _ref_sig = _buy_sig if _buy_sig else _sell_sig  # for indicator state fallback
         _mtf_raw = getattr(_ref_sig, "mtf_alignment", None) if _ref_sig else None
+        # Normalise: "CONFIRMED:3m" old format → still readable; new format is "1m+3m"
+        if _mtf_raw and _mtf_raw.startswith("CONFIRMED:"):
+            _adj = _mtf_raw.split(":", 1)[1]
+            _mtf_raw = f"{self.timeframe}+{_adj}"
         _scan_entry: dict = {
             "symbol":       sym,
             "timeframe":    self.timeframe,
@@ -511,9 +523,14 @@ class MarketScanner:
             try:
                 from src.signals.mtf_filter import check_cross_tf_confirmation, signal_memory
                 signal_memory.cleanup()
-                _mtf_status = check_cross_tf_confirmation(sym, self.timeframe, sig.signal_type.lower())
-                sig.mtf_alignment = _mtf_status
-                if _mtf_status == "PENDING":
+                _mtf_raw = check_cross_tf_confirmation(sym, self.timeframe, sig.signal_type.lower())
+                if _mtf_raw.startswith("CONFIRMED:"):
+                    _confirmed_adj = _mtf_raw.split(":", 1)[1]   # e.g. "3m"
+                    # Store as "1m+3m" style so tables.py can display it
+                    sig.mtf_alignment = f"{self.timeframe}+{_confirmed_adj}"
+                else:
+                    sig.mtf_alignment = "PENDING"
+                if sig.mtf_alignment == "PENDING":
                     log.debug("MTF pending for %s %s — waiting for adjacent TF confirmation", sym, self.timeframe)
                     continue  # silently wait, don't log as rejection
             except Exception as _mtf_err:

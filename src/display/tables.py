@@ -71,9 +71,15 @@ def print_buy_signal(sig: BuySignalResult) -> None:
         f"[bold green]{sig.points}/3[/bold green]"
     ))
     _mtf = getattr(sig, "mtf_alignment", None)
-    if _mtf:
-        _mtf_colors = {"ALIGNED": "bold green", "NEUTRAL": "dim white", "COUNTER": "bold red", "UNAVAILABLE": "dim"}
-        t.add_row("MTF", f"[{_mtf_colors.get(_mtf, 'white')}]{_mtf}[/{_mtf_colors.get(_mtf, 'white')}]")
+    if _mtf and _mtf not in ("PENDING", ""):
+        if "+" in _mtf:
+            _tf_a, _tf_b = _mtf.split("+", 1)
+            _mtf_display = f"[bold green]{_tf_a} + {_tf_b}  ✓  ALIGNED[/bold green]"
+        else:
+            _mtf_legacy = {"ALIGNED": "bold green", "NEUTRAL": "dim white", "COUNTER": "bold red", "UNAVAILABLE": "dim"}
+            _c = _mtf_legacy.get(_mtf, "white")
+            _mtf_display = f"[{_c}]{_mtf}[/{_c}]"
+        t.add_row("MTF Align", _mtf_display)
     if sig.ai_confidence is not None:
         conf_col = "green" if sig.ai_confidence >= 0.50 else "yellow"
         t.add_row("AI Conf",  f"[{conf_col}]{sig.ai_confidence*100:.0f}%[/{conf_col}]")
@@ -111,9 +117,15 @@ def print_sell_signal(sig: SellSignalResult) -> None:
         f"[bold red]{sig.points}/3[/bold red]"
     ))
     _mtf = getattr(sig, "mtf_alignment", None)
-    if _mtf:
-        _mtf_colors = {"ALIGNED": "bold green", "NEUTRAL": "dim white", "COUNTER": "bold red", "UNAVAILABLE": "dim"}
-        t.add_row("MTF", f"[{_mtf_colors.get(_mtf, 'white')}]{_mtf}[/{_mtf_colors.get(_mtf, 'white')}]")
+    if _mtf and _mtf not in ("PENDING", ""):
+        if "+" in _mtf:
+            _tf_a, _tf_b = _mtf.split("+", 1)
+            _mtf_display = f"[bold green]{_tf_a} + {_tf_b}  ✓  ALIGNED[/bold green]"
+        else:
+            _mtf_legacy = {"ALIGNED": "bold green", "NEUTRAL": "dim white", "COUNTER": "bold red", "UNAVAILABLE": "dim"}
+            _c = _mtf_legacy.get(_mtf, "white")
+            _mtf_display = f"[{_c}]{_mtf}[/{_c}]"
+        t.add_row("MTF Align", _mtf_display)
     if sig.ai_confidence is not None:
         conf_col = "green" if sig.ai_confidence >= 0.50 else "yellow"
         t.add_row("AI Conf",  f"[{conf_col}]{sig.ai_confidence*100:.0f}%[/{conf_col}]")
@@ -585,15 +597,20 @@ def print_scan_status_table(scan_results: list[dict]) -> None:
         )
 
         # ── MTF cell ─────────────────────────────────────────────────────
-        _mtf_cols = {
-            "ALIGNED":     "bold green",
-            "NEUTRAL":     "dim white",
-            "COUNTER":     "bold red",
-            "UNAVAILABLE": "dim",
-            "PENDING":     "yellow",
-        }
-        mtf_col  = _mtf_cols.get(str(mtf).upper(), "white")
-        mtf_cell = f"[{mtf_col}]{mtf}[/{mtf_col}]"
+        # "1m+3m" format → show as "1m+3m ✓" in green
+        if "+" in str(mtf):
+            mtf_cell = f"[bold green]{mtf} ✓[/bold green]"
+        else:
+            _mtf_cols = {
+                "ALIGNED":     "bold green",
+                "NEUTRAL":     "dim white",
+                "COUNTER":     "bold red",
+                "UNAVAILABLE": "dim",
+                "PENDING":     "yellow",
+                "—":           "dim",
+            }
+            mtf_col  = _mtf_cols.get(str(mtf).upper(), _mtf_cols.get(str(mtf), "dim"))
+            mtf_cell = f"[{mtf_col}]{mtf}[/{mtf_col}]"
 
         # ── Row style ────────────────────────────────────────────────────
         row_style = ""

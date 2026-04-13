@@ -101,8 +101,8 @@ def _is_confirmed(
     timeframe: str,
     direction: str,
     ts: datetime,
-) -> bool:
-    """Return True if any adjacent TF fired the same direction within the window."""
+) -> Optional[str]:
+    """Return the confirming adjacent TF name, or None if not confirmed."""
     direction = direction.lower()
     tf_mins = _TF_MINUTES.get(timeframe, 1)
     window_seconds = _WINDOW_CANDLES * tf_mins * 60
@@ -124,10 +124,10 @@ def _is_confirmed(
                         "MTF CONFIRMED: %s %s %s — adjacent %s fired %.0fs ago (window %ds)",
                         symbol, timeframe, direction, adj_tf, age, window_seconds,
                     )
-                    return True
+                    return adj_tf
     except Exception as exc:
         log.debug("MTF confirm check failed: %s", exc)
-    return False
+    return None
 
 
 def cleanup_expired() -> None:
@@ -170,11 +170,12 @@ def check_cross_tf_confirmation(
     direction = direction.lower()
 
     # Check BEFORE recording so we don't self-confirm
-    confirmed = _is_confirmed(symbol, timeframe, direction, timestamp)
+    confirmed_tf = _is_confirmed(symbol, timeframe, direction, timestamp)
     _record(symbol, timeframe, direction, timestamp)
 
-    if confirmed:
-        return "CONFIRMED"
+    if confirmed_tf:
+        # Return "CONFIRMED:adj_tf" so callers can display which pair aligned
+        return f"CONFIRMED:{confirmed_tf}"
     return "PENDING"
 
 
