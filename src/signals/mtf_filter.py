@@ -1,127 +1,152 @@
-"""Cross-Timeframe Signal Confirmation (replaces single-bar MTF check).
+"""Cross-Timeframe Signal Confirmation — SQLite-backed shared memory.
 
-Instead of checking alligator direction on a higher TF, this system tracks
-when full signals (3/3 confluence) fire across timeframes. A signal is
-CONFIRMED when two adjacent timeframes both show the same direction within
-a 25-candle window of each other.
+Each timeframe bot instance (1m, 2m, 3m …) is a separate process.
+In-memory stores don't survive across processes, so signal state is
+persisted in the shared SQLite database (data/algobot.db).
 
-Adjacent timeframe pairs (either order counts):
-  1m <-> 2m <-> 3m <-> 5m <-> 15m <-> 1h <-> 2h <-> 4h
+A signal is CONFIRMED when two adjacent timeframes both show the same
+direction within a 50-candle window of each other.
+
+Adjacent pairs (either order confirms):
+  1m  ↔ 2m, 3m
+  2m  ↔ 1m, 3m
+  3m  ↔ 2m, 5m
+  5m  ↔ 3m, 15m
+  15m ↔ 5m, 30m
+  30m ↔ 15m, 1h
+  1h  ↔ 30m, 2h
+  2h  ↔ 1h, 4h
+  4h  ↔ 2h, 1d
+
+If an adjacent TF has no data, the next available one is tried automatically.
 """
 
 from __future__ import annotations
 
 import logging
-import threading
+import sqlite3
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional
 
 log = logging.getLogger(__name__)
 
 # ── Adjacent timeframe map ────────────────────────────────────────────────────
 _ADJACENT_TFS: dict[str, list[str]] = {
-    "1m":  ["2m", "3m"],    # 1m confirmed by 2m or 3m
-    "2m":  ["1m", "3m"],    # 2m confirmed by 1m or 3m
-    "3m":  ["2m", "5m"],    # 3m confirmed by 2m or 5m
-    "5m":  ["3m", "15m"],   # 5m confirmed by 3m or 15m
-    "15m": ["5m", "30m"],   # 15m confirmed by 5m or 30m
-    "30m": ["15m", "1h"],   # 30m confirmed by 15m or 1h
-    "1h":  ["30m", "2h"],   # 1h confirmed by 30m or 2h
-    "2h":  ["1h", "4h"],    # 2h confirmed by 1h or 4h (no 3h in standard data)
-    "4h":  ["2h", "1d"],    # 4h confirmed by 2h or 1d
+    "1m":  ["2m", "3m"],
+    "2m":  ["1m", "3m"],
+    "3m":  ["2m", "5m"],
+    "5m":  ["3m", "15m"],
+    "15m": ["5m", "30m"],
+    "30m": ["15m", "1h"],
+    "1h":  ["30m", "2h"],
+    "2h":  ["1h", "4h"],
+    "4h":  ["2h", "1d"],
 }
 
 # ── Minutes per candle ────────────────────────────────────────────────────────
 _TF_MINUTES: dict[str, int] = {
-    "1m":  1,
-    "2m":  2,
-    "3m":  3,
-    "5m":  5,
-    "15m": 15,
-    "30m": 30,
-    "1h":  60,
-    "2h":  120,
-    "4h":  240,
-    "1d":  1440,
+    "1m": 1, "2m": 2, "3m": 3, "5m": 5,
+    "15m": 15, "30m": 30, "1h": 60,
+    "2h": 120, "4h": 240, "1d": 1440,
 }
 
-_WINDOW_CANDLES = 50
+_WINDOW_CANDLES = 50   # each TF confirmation window in its own candle units
 
 
-# ── Signal memory store ───────────────────────────────────────────────────────
+# ── SQLite path (mirrors db.py logic) ─────────────────────────────────────────
 
-class SignalMemory:
-    """Thread-safe store for pending cross-TF signals.
+def _db_path() -> Path:
+    try:
+        from src.config import SQLITE_PATH
+        return Path(SQLITE_PATH)
+    except Exception:
+        return Path("data/algobot.db")
 
-    Keyed by (symbol, timeframe, direction) -> datetime of the signal.
-    """
 
-    def __init__(self) -> None:
-        self._lock = threading.Lock()
-        # (symbol, timeframe, direction) -> datetime (UTC)
-        self._store: dict[tuple[str, str, str], datetime] = {}
+# ── Shared signal memory (SQLite) ─────────────────────────────────────────────
 
-    def record(self, symbol: str, timeframe: str, direction: str, timestamp: datetime) -> None:
-        """Store or refresh a signal entry."""
-        key = (symbol, timeframe, direction)
-        with self._lock:
-            self._store[key] = timestamp
+def _ensure_table(conn: sqlite3.Connection) -> None:
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS mtf_signal_memory (
+            symbol    TEXT NOT NULL,
+            timeframe TEXT NOT NULL,
+            direction TEXT NOT NULL,
+            fired_at  REAL NOT NULL,          -- Unix timestamp (UTC)
+            PRIMARY KEY (symbol, timeframe, direction)
+        )
+    """)
+    conn.commit()
 
-    def is_confirmed(
-        self,
-        symbol: str,
-        timeframe: str,
-        direction: str,
-        timestamp: datetime,
-    ) -> bool:
-        """Return True if any adjacent TF fired the same direction within 25 candles.
 
-        The window size is 25 candles measured in the BASE timeframe's minutes,
-        converted to seconds.
-        """
-        tf_mins = _TF_MINUTES.get(timeframe, 1)
-        window_seconds = _WINDOW_CANDLES * tf_mins * 60
+def _record(symbol: str, timeframe: str, direction: str, ts: datetime) -> None:
+    """Upsert a signal into the shared SQLite table."""
+    fired_at = ts.timestamp()
+    try:
+        with sqlite3.connect(_db_path()) as conn:
+            _ensure_table(conn)
+            conn.execute("""
+                INSERT INTO mtf_signal_memory (symbol, timeframe, direction, fired_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(symbol, timeframe, direction)
+                DO UPDATE SET fired_at = excluded.fired_at
+            """, (symbol, timeframe, direction.lower(), fired_at))
+            conn.commit()
+    except Exception as exc:
+        log.debug("MTF record failed: %s", exc)
 
-        adjacent = _ADJACENT_TFS.get(timeframe, [])
-        with self._lock:
+
+def _is_confirmed(
+    symbol: str,
+    timeframe: str,
+    direction: str,
+    ts: datetime,
+) -> bool:
+    """Return True if any adjacent TF fired the same direction within the window."""
+    direction = direction.lower()
+    tf_mins = _TF_MINUTES.get(timeframe, 1)
+    window_seconds = _WINDOW_CANDLES * tf_mins * 60
+    now_ts = ts.timestamp()
+    cutoff = now_ts - window_seconds
+
+    adjacent = _ADJACENT_TFS.get(timeframe, [])
+    try:
+        with sqlite3.connect(_db_path()) as conn:
+            _ensure_table(conn)
             for adj_tf in adjacent:
-                key = (symbol, adj_tf, direction)
-                adj_ts = self._store.get(key)
-                if adj_ts is None:
-                    continue
-                age_seconds = abs((timestamp - adj_ts).total_seconds())
-                if age_seconds <= window_seconds:
+                row = conn.execute("""
+                    SELECT fired_at FROM mtf_signal_memory
+                    WHERE symbol=? AND timeframe=? AND direction=? AND fired_at >= ?
+                """, (symbol, adj_tf, direction, cutoff)).fetchone()
+                if row:
+                    age = now_ts - row[0]
                     log.debug(
-                        "MTF confirmed: %s %s %s — adjacent %s fired %.0fs ago (window %ds)",
-                        symbol, timeframe, direction, adj_tf, age_seconds, window_seconds,
+                        "MTF CONFIRMED: %s %s %s — adjacent %s fired %.0fs ago (window %ds)",
+                        symbol, timeframe, direction, adj_tf, age, window_seconds,
                     )
                     return True
-        return False
-
-    def cleanup(self) -> None:
-        """Remove entries older than 25 candles on their own timeframe."""
-        now = datetime.now(tz=timezone.utc)
-        expired_keys = []
-        with self._lock:
-            for (symbol, timeframe, direction), ts in self._store.items():
-                tf_mins = _TF_MINUTES.get(timeframe, 1)
-                window_seconds = _WINDOW_CANDLES * tf_mins * 60
-                # Ensure ts is timezone-aware for comparison
-                if ts.tzinfo is None:
-                    ts_aware = ts.replace(tzinfo=timezone.utc)
-                else:
-                    ts_aware = ts
-                age = (now - ts_aware).total_seconds()
-                if age > window_seconds:
-                    expired_keys.append((symbol, timeframe, direction))
-            for key in expired_keys:
-                del self._store[key]
-        if expired_keys:
-            log.debug("MTF cleanup: removed %d expired entries", len(expired_keys))
+    except Exception as exc:
+        log.debug("MTF confirm check failed: %s", exc)
+    return False
 
 
-# ── Module-level singleton ────────────────────────────────────────────────────
-signal_memory = SignalMemory()
+def cleanup_expired() -> None:
+    """Remove entries older than 50 candles on their own timeframe."""
+    try:
+        with sqlite3.connect(_db_path()) as conn:
+            _ensure_table(conn)
+            now = datetime.now(tz=timezone.utc).timestamp()
+            # Use the largest window (1d = 1440 * 50 = 72000s) as safe max
+            # Each TF cleans its own expired entries
+            for tf, mins in _TF_MINUTES.items():
+                cutoff = now - (_WINDOW_CANDLES * mins * 60)
+                conn.execute("""
+                    DELETE FROM mtf_signal_memory
+                    WHERE timeframe=? AND fired_at < ?
+                """, (tf, cutoff))
+            conn.commit()
+    except Exception as exc:
+        log.debug("MTF cleanup failed: %s", exc)
 
 
 # ── Main public function ──────────────────────────────────────────────────────
@@ -132,30 +157,30 @@ def check_cross_tf_confirmation(
     direction: str,
     timestamp: Optional[datetime] = None,
 ) -> str:
-    """Record a signal and check for cross-TF confirmation.
-
-    Parameters
-    ----------
-    symbol:    Asset symbol (e.g. "BTCUSD", "AAPL").
-    timeframe: The signal's timeframe (e.g. "5m").
-    direction: "buy" or "sell".
-    timestamp: When the signal fired. Defaults to utcnow().
+    """Record a signal and check for cross-TF confirmation via shared SQLite.
 
     Returns
     -------
-    "CONFIRMED"  — an adjacent TF fired the same direction within 25 candles.
+    "CONFIRMED"  — an adjacent TF fired the same direction within the window.
     "PENDING"    — stored; waiting for an adjacent TF to confirm.
-    "EXPIRED"    — (reserved; cleanup handles expiry, not this call path).
     """
     if timestamp is None:
         timestamp = datetime.now(tz=timezone.utc)
 
-    # Normalise direction so "BUY"/"SELL" and "buy"/"sell" both work
     direction = direction.lower()
 
-    confirmed = signal_memory.is_confirmed(symbol, timeframe, direction, timestamp)
-    signal_memory.record(symbol, timeframe, direction, timestamp)
+    # Check BEFORE recording so we don't self-confirm
+    confirmed = _is_confirmed(symbol, timeframe, direction, timestamp)
+    _record(symbol, timeframe, direction, timestamp)
 
     if confirmed:
         return "CONFIRMED"
     return "PENDING"
+
+
+# ── Backwards-compat shim (scanner imports signal_memory.cleanup) ─────────────
+class _MemoryShim:
+    def cleanup(self) -> None:
+        cleanup_expired()
+
+signal_memory = _MemoryShim()
