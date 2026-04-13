@@ -35,6 +35,10 @@ class AlpacaAdapter:
             base = base[:-3]
         self._base = base
         self._connected = False
+        # Cooldown cache: avoid hammering /v2/account on every can_trade() call
+        self._last_connect_attempt: float = 0.0
+        self._connect_cooldown: float = 60.0
+        self._auth_hint_logged = False  # emit actionable 401 guidance only once
         # trade_id -> execution state (in-memory only; restart loses mapping)
         self._trades: dict[str, dict[str, Any]] = {}
 
@@ -67,6 +71,12 @@ class AlpacaAdapter:
         return s if s else "0"
 
     def connect(self) -> bool:
+        # Cooldown: reuse cached result if called again within 60s
+        now = time.time()
+        if (now - self._last_connect_attempt) < self._connect_cooldown:
+            return self._connected
+        self._last_connect_attempt = now
+
         if not ALPACA_API_KEY or not ALPACA_SECRET_KEY:
             log.warning("Alpaca credentials missing — Alpaca disabled")
             self._connected = False
@@ -80,6 +90,22 @@ class AlpacaAdapter:
             self._connected = r.status_code == 200
             if not self._connected:
                 log.warning("Alpaca connect failed (%s): %s", r.status_code, r.text[:300])
+                if r.status_code == 401 and not self._auth_hint_logged:
+                    self._auth_hint_logged = True
+                    log.warning(
+                        "Alpaca 401 Unauthorized — API keys rejected. "
+                        "Regenerate keys at https://app.alpaca.markets → "
+                        "Paper Trading → API Keys. "
+                        "Ensure ALPACA_API_KEY and ALPACA_SECRET_KEY in .env "
+                        "match your paper account."
+                    )
+                elif r.status_code == 403 and not self._auth_hint_logged:
+                    self._auth_hint_logged = True
+                    log.warning(
+                        "Alpaca 403 Forbidden — account may be restricted or "
+                        "keys may lack required permissions. Check your account "
+                        "status at https://app.alpaca.markets"
+                    )
             return self._connected
         except Exception as e:
             log.warning("Alpaca connect error: %s", e)

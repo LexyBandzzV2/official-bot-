@@ -187,14 +187,21 @@ class MarketScanner:
                 log.warning("Broker init failed: %s — live orders disabled", e)
                 self._broker = None
 
-        # Execution routing restrictions: don't even scan symbols we can't execute.
+        # Execution routing: lightweight asset-class filter only (no network calls).
+        # Broker connectivity is checked at order time, not scan time, so we never
+        # drop symbols just because the broker API is unreachable.
         if (not self.dry_run) and self._broker and ((TRADING_MODE == "live") or self.execution_broker):
+            _pref = (self.execution_broker or "alpaca").lower()
+            if _pref == "alpaca":
+                _allowed_classes = ("stock", "crypto")
+            else:
+                _allowed_classes = ("stock", "crypto", "forex")
             before = len(self.symbols)
-            self.symbols = [s for s in self.symbols if self._broker and self._broker.can_trade(s, timeframe=self.timeframe)]
+            self.symbols = [s for s in self.symbols if get_asset_class(s) in _allowed_classes]
             after = len(self.symbols)
             if after != before:
                 broker_suffix = f" broker={self.execution_broker}" if self.execution_broker else ""
-                log.info("Execution routing filter: %d -> %d symbols for timeframe=%s%s", before, after, self.timeframe, broker_suffix)
+                log.info("Execution routing filter (asset-class): %d -> %d symbols for timeframe=%s%s", before, after, self.timeframe, broker_suffix)
 
         # Final Sprint: universe filter — drop symbols whose group is disabled
         _before_universe = len(self.symbols)
