@@ -90,6 +90,7 @@ class BuySignalResult:
     prefilter_rank_score:        Optional[float]  = None
     prefilter_passed:            Optional[bool]   = None
     prefilter_skip_reason:       str              = ""
+    mtf_alignment:               Optional[str]    = None   # ALIGNED / COUNTER / NEUTRAL / UNAVAILABLE
 
 
 @dataclass
@@ -156,6 +157,7 @@ class SellSignalResult:
     prefilter_rank_score:        Optional[float]  = None
     prefilter_passed:            Optional[bool]   = None
     prefilter_skip_reason:       str              = ""
+    mtf_alignment:               Optional[str]    = None   # ALIGNED / COUNTER / NEUTRAL / UNAVAILABLE
 
 
 @dataclass

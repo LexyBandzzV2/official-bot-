@@ -71,6 +71,7 @@ ASSET_CATALOGUE: Dict[str, dict] = {
     "AMZN":    {"class": "stock",      "finnhub": "AMZN",           "yf": "AMZN",       "display": "Amazon"},
     "NFLX":    {"class": "stock",      "finnhub": "NFLX",           "yf": "NFLX",       "display": "Netflix"},
     "SMCI":    {"class": "stock",      "finnhub": "SMCI",           "yf": "SMCI",       "display": "Super Micro Computer"},
+    "AMN":     {"class": "stock",      "finnhub": "AMN",            "yf": "AMN",        "display": "AMN Healthcare"},
     "QQQ":     {"class": "stock",      "finnhub": "QQQ",            "yf": "QQQ",        "display": "Invesco QQQ Trust"},
     "SPY":     {"class": "stock",      "finnhub": "SPY",            "yf": "SPY",        "display": "SPDR S&P 500 ETF"},
     "TQQQ":    {"class": "stock",      "finnhub": "TQQQ",           "yf": "TQQQ",       "display": "ProShares UltraPro QQQ"},
@@ -78,6 +79,8 @@ ASSET_CATALOGUE: Dict[str, dict] = {
     "TECL":    {"class": "stock",      "finnhub": "TECL",           "yf": "TECL",       "display": "Direxion Daily Technology Bull 3X"},
     "HIBL":    {"class": "stock",      "finnhub": "HIBL",           "yf": "HIBL",       "display": "Direxion Daily S&P 500 High Beta Bull 3X"},
     "LABU":    {"class": "stock",      "finnhub": "LABU",           "yf": "LABU",       "display": "Direxion Daily S&P Biotech Bull 3X"},
+    "NVDL":    {"class": "stock",      "finnhub": "NVDL",           "yf": "NVDL",       "display": "GraniteShares 2x Long NVDA Daily ETF"},
+    "BITX":    {"class": "stock",      "finnhub": "BITX",           "yf": "BITX",       "display": "2x Bitcoin Strategy ETF"},
 }
 
 # ── Timeframe mapping ─────────────────────────────────────────────────────────

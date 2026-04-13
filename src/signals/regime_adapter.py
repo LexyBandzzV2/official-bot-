@@ -109,19 +109,7 @@ def apply_regime_score_bias(
             bias,
             regime_ctx.regime_score_reason,
         )
-        try:
-            from src.display.tables import print_regime_bias
-            print_regime_bias(
-                getattr(sig, "asset", "?"),
-                getattr(sig, "timeframe", "?"),
-                getattr(sig, "signal_type", "?"),
-                old_score,
-                float(sig.score_total),
-                bias,
-                regime_ctx.regime_score_reason,
-            )
-        except Exception:
-            pass
+        # Regime bias is logged at debug level; no terminal print to reduce noise
     except Exception as exc:
         log.debug("apply_regime_score_bias failed: %s", exc)
 

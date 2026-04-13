@@ -113,11 +113,6 @@ def rank_signal(sig: object) -> float:
 
     log.debug("No AI client available — returning neutral score 0.4 for %s %s",
               sig.signal_type, sig.asset)  # type: ignore
-    try:
-        from src.display.tables import print_ai_unavailable
-        print_ai_unavailable(sig.signal_type, sig.asset)  # type: ignore
-    except Exception:
-        pass
     return 0.4
 
 

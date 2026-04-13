@@ -263,23 +263,14 @@ class MarketScanner:
                 except Exception as exc:
                     log.debug("_classify_regime: save failed: %s", exc)
                 self._regime_cache[cache_key] = snapshot
-                log.info(
+                log.debug(
                     "Regime change: %s/%s → %s (conf=%.2f) | %s",
                     sym, self.timeframe,
                     snapshot.regime_label.value,
                     snapshot.confidence_score,
                     snapshot.evidence_summary,
                 )
-                try:
-                    from src.display.tables import print_regime_change
-                    print_regime_change(
-                        sym, self.timeframe,
-                        snapshot.regime_label.value,
-                        float(snapshot.confidence_score),
-                        str(snapshot.evidence_summary),
-                    )
-                except Exception:
-                    pass
+                # Regime change inline print suppressed — debug logs only
             else:
                 self._regime_cache[cache_key] = snapshot
 
@@ -292,22 +283,36 @@ class MarketScanner:
 
     def _scan_once(self) -> None:
         now_str = datetime.now(_tz).strftime("%Y-%m-%d %I:%M:%S %p %Z")
-        log.info("Scan cycle starting at %s for %d symbols", now_str, len(self.symbols))
+        try:
+            from src.display.tables import console
+            from rich.rule import Rule
+            console.print(Rule(
+                f"[dim]Scan #{getattr(self, '_scan_count', 0) + 1}  |  {self.timeframe}  |  {len(self.symbols)} symbols  |  {now_str}[/dim]",
+                style="dim",
+            ))
+        except Exception:
+            log.info("Scan cycle starting at %s for %d symbols", now_str, len(self.symbols))
+        self._scan_count = getattr(self, "_scan_count", 0) + 1
 
         # Step 1: Fetch + convert HA for all symbols
         import pandas as _pd
         ha_data: dict[str, _pd.DataFrame] = {}  # symbol → ha_df
+        failed_fetches: list[str] = []
         for sym in self.symbols:
             try:
                 # Use configured data source if set, otherwise auto-detect
                 src = self.data_source if self.data_source else best_source(sym)
                 raw_df = get_latest_candles(sym, self.timeframe, self.candles_lookback, source=src)
                 if raw_df.empty:
+                    failed_fetches.append(sym)
                     continue
                 ha_df = convert_to_heikin_ashi(raw_df)
                 ha_data[sym] = ha_df
             except Exception as e:
                 log.debug("Data fetch failed for %s: %s", sym, e)
+                failed_fetches.append(sym)
+        if failed_fetches:
+            log.debug("Data unavailable for: %s", ", ".join(failed_fetches))
 
         if not ha_data:
             log.warning("No data received for any symbol this cycle")
@@ -319,7 +324,8 @@ class MarketScanner:
             sc = score_symbol(sym, self.timeframe, ha_df)
             if sc:
                 scores.append(sc)
-        # Step 2b: Final Sprint prefilter layer — volume gate only
+        # Prefilter removed — all scored symbols proceed to signal evaluation.
+        # We still build a minimal lookup so prefilter audit fields are stamped.
         _mode_str = _timeframe_to_mode(self.timeframe).value
         prefilter_results: list = []
         for sc in scores:
@@ -335,25 +341,12 @@ class MarketScanner:
                 mode=_mode_str,
                 alligator_spread=sc.alligator_spread,
             )
+            pfr.passed = True   # prefilter is disabled — all pass
+            pfr.skip_reason = ""
             prefilter_results.append(pfr)
 
-        prefilter_passed = [r for r in prefilter_results if r.passed]
-        top_symbols = {r.symbol for r in prefilter_passed}
-
-        if prefilter_results:
-            skip_counts = Counter(r.skip_reason or "passed" for r in prefilter_results)
-            top_survivors = ", ".join(
-                f"{r.symbol}(vol={r.volume_ratio:.2f}x)"
-                for r in prefilter_passed[:10]
-            ) or "none"
-            log.info(
-                "Prefilter summary [%s]: scanned=%d passed=%d weak_vol=%d survivors=%s",
-                self.timeframe,
-                len(prefilter_results),
-                len(prefilter_passed),
-                skip_counts.get("blocked_by_weak_volume", 0),
-                top_survivors,
-            )
+        top_symbols = {r.symbol for r in prefilter_results}
+        log.info("Prefilter disabled — all %d scored symbols proceed to signal eval", len(top_symbols))
 
         # Build a lookup for prefilter metadata to stamp on signals later
         self._prefilter_lookup: dict = {r.symbol: r for r in prefilter_results}
@@ -486,15 +479,24 @@ class MarketScanner:
                 if _REGIME_AVAILABLE else AI_CONFIDENCE_THRESHOLD
             )
             apply_ai_effect(sig, ai_score, _ai_threshold)
-            if ai_score < _ai_threshold:
-                self._reject_signal(sig, ha_df, f"AI rejected (score={ai_score:.0%})")
-                continue
+            # AI/ML gate removed — score is computed for info only, never rejects
 
             # Risk manager approval
             approved, reason = self.risk_manager.approve_signal(sig)
             if not approved:
                 self._reject_signal(sig, ha_df, reason)
                 continue
+
+            # MTF alignment check — block COUNTER signals, allow ALIGNED/NEUTRAL/UNAVAILABLE
+            try:
+                from src.signals.mtf_filter import check_mtf_alignment
+                _mtf = check_mtf_alignment(sym, self.timeframe, sig.signal_type.lower())
+                sig.mtf_alignment = _mtf
+                if _mtf == "COUNTER":
+                    self._reject_signal(sig, ha_df, f"MTF_COUNTER:{self.timeframe}")
+                    continue
+            except Exception as _mtf_err:
+                log.debug("MTF check skipped for %s: %s", sym, _mtf_err)
 
             # Phase 12: regime-aware entry filter (after all base gates, before final accept)
             # Phase 14: pass suitability threshold delta so friction layers compose cleanly

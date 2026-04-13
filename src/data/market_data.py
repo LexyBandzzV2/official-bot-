@@ -214,8 +214,12 @@ TIMEFRAME_FINNHUB: dict[str, str] = {
 }
 
 TIMEFRAME_YFINANCE: dict[str, str] = {
-    "1m": "1m", "5m": "5m", "15m": "15m", "30m": "30m",
+    "1m": "1m", "3m": "1m", "5m": "5m", "15m": "15m", "30m": "30m",
     "1h": "1h", "1d": "1d", "1w": "1wk",
+}
+# Timeframes that need resampling after yfinance fetch (fetch_interval -> target_interval)
+_YF_RESAMPLE: dict[str, str] = {
+    "3m": "3min",
 }
 
 # OpenBB uses yfinance-compatible interval strings; unsupported ones map to nearest.
@@ -358,7 +362,18 @@ def _fetch_yfinance(
     date_col = "Datetime" if "Datetime" in df.columns else "Date"
     df = df.rename(columns={date_col: "time", "Open": "open", "High": "high",
                              "Low": "low", "Close": "close", "Volume": "volume"})
-    return _normalise(df)
+    df = _normalise(df)
+    # Resample to target timeframe when yfinance doesn't support it natively (e.g. 3m)
+    resample_rule = _YF_RESAMPLE.get(timeframe)
+    if resample_rule and not df.empty and "time" in df.columns:
+        try:
+            df = df.set_index("time")
+            df = df.resample(resample_rule).agg(
+                {"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"}
+            ).dropna(subset=["open", "close"]).reset_index()
+        except Exception:
+            pass
+    return df
 
 
 # ── OpenBB (equity / crypto / forex via yfinance provider) ───────────────────
@@ -496,11 +511,18 @@ def get_historical_ohlcv(
 
     errors: list[str] = []
 
-    # Auto-detect source if not forced
-    is_crypto = "/" in symbol and any(
-        c in symbol.upper() for c in ["BTC", "ETH", "XRP", "SOL", "ADA", "BNB", "USDT"]
-    )
-    is_forex = "/" in symbol and not is_crypto
+    # Auto-detect source: prefer catalogue asset class over keyword heuristic
+    try:
+        from src.data.symbol_mapper import get_asset_class as _get_asset_class
+        _asset_cls = _get_asset_class(symbol)
+        is_crypto = _asset_cls == "crypto"
+        is_forex  = _asset_cls == "forex"
+    except Exception:
+        is_crypto = "/" in symbol and any(
+            c in symbol.upper() for c in ["BTC", "ETH", "XRP", "SOL", "ADA", "BNB", "USDT",
+                                           "INJ", "AVAX", "LINK", "DOGE", "ARB", "APT"]
+        )
+        is_forex = "/" in symbol and not is_crypto
 
     if source is None:
         if is_crypto:
@@ -706,8 +728,15 @@ def get_latest_candles(
     look_back_min = mins_per_bar * count * 2
     start = datetime.now(timezone.utc) - timedelta(minutes=look_back_min)
 
-    # Determine if crypto symbol
-    is_crypto = "/" in symbol and any(c in symbol.upper() for c in ["BTC", "ETH", "XRP", "SOL", "ADA", "BNB", "USDT"])
+    # Determine if crypto symbol — use catalogue asset class for accuracy
+    try:
+        from src.data.symbol_mapper import get_asset_class as _get_ac
+        is_crypto = _get_ac(symbol) == "crypto"
+    except Exception:
+        is_crypto = "/" in symbol and any(
+            c in symbol.upper() for c in ["BTC", "ETH", "XRP", "SOL", "ADA", "BNB", "USDT",
+                                           "INJ", "AVAX", "LINK", "DOGE", "ARB", "APT"]
+        )
 
     # Use Kraken WebSocket for crypto and supported timeframes
     supported_kraken_tfs = {"5m": 5, "15m": 15, "30m": 30, "1h": 60, "4h": 240}

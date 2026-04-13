@@ -52,69 +52,81 @@ def _tick(val: bool) -> str:
 # ── BUY signal ────────────────────────────────────────────────────────────────
 
 def print_buy_signal(sig: BuySignalResult) -> None:
-    ts = sig.timestamp.astimezone(_tz).strftime("%Y-%m-%d  %I:%M:%S %p %Z")
+    ts = sig.timestamp.astimezone(_tz).strftime("%I:%M:%S %p")
 
-    t = Table(box=box.HEAVY_HEAD, show_header=False, padding=(0, 1),
-              border_style="green")
-    t.add_column("Field",  style="bold white",  no_wrap=True)
-    t.add_column("Value",  style="bright_white", no_wrap=False)
+    t = Table(box=box.SIMPLE, show_header=False, padding=(0, 1), border_style="green")
+    t.add_column("k", style="bold white",   no_wrap=True, min_width=12)
+    t.add_column("v", style="bright_white", no_wrap=False)
 
-    t.add_row("Symbol",           f"[bold cyan]{sig.asset}[/bold cyan]")
-    t.add_row("Asset Class",      _asset_class_label(sig.asset))
-    t.add_row("Timeframe",        sig.timeframe)
-    t.add_row("Strategy Mode",    f"[bold]{getattr(sig, 'strategy_mode', 'UNKNOWN')}[/bold]")
-    t.add_row("Signal Date/Time", f"[bold]{ts}[/bold]")
-    t.add_row("Points",           f"[bold green]{sig.points}/3  ✓[/bold green]" if sig.points == 3 else f"{sig.points}/3")
-    t.add_row("─" * 20,           "─" * 35)
-    t.add_row("Alligator",        f"{_tick(sig.alligator_point)}  Lips above teeth + jaw")
-    t.add_row("Stochastic",       f"{_tick(sig.stochastic_point)}  K or D entered above 80")
-    t.add_row("Vortex",           f"{_tick(sig.vortex_point)}  VI+ crossed above VI-")
-    t.add_row("─" * 20,           "─" * 35)
-    t.add_row("Entry Price",      f"[bold yellow]{_fmt_price(sig.entry_price)}[/bold yellow]")
-    t.add_row("Stop Loss (2%)",   f"[red]{_fmt_price(sig.stop_loss)}  (hard floor)[/red]")
-    t.add_row("Est. Move",        f"[green]{_fmt_pct(sig.profit_estimate_pct)}[/green]")
-    t.add_row("Exit Trigger",     "Lips touches / crosses down to Teeth (exit long)")
-
+    t.add_row("Symbol",     f"[bold cyan]{sig.asset}[/bold cyan]  [dim]{sig.timeframe}[/dim]  {_asset_class_label(sig.asset)}")
+    t.add_row("Direction",  "[bold green]LONG  ▲[/bold green]")
+    t.add_row("Entry",      f"[bold yellow]{_fmt_price(sig.entry_price)}[/bold yellow]")
+    t.add_row("Stop Loss",  f"[red]{_fmt_price(sig.stop_loss)}[/red]  [dim](-2% hard floor)[/dim]")
+    t.add_row("Est. Move",  f"[bold green]{_fmt_pct(sig.profit_estimate_pct)}[/bold green]")
+    t.add_row("Strategy",   f"[bold]{getattr(sig, 'strategy_mode', 'SCALP')}[/bold]")
+    t.add_row("Indicators", (
+        f"{_tick(sig.alligator_point)} Alligator  "
+        f"{_tick(sig.stochastic_point)} Stoch  "
+        f"{_tick(sig.vortex_point)} Vortex  "
+        f"[bold green]{sig.points}/3[/bold green]"
+    ))
+    _mtf = getattr(sig, "mtf_alignment", None)
+    if _mtf:
+        _mtf_colors = {"ALIGNED": "bold green", "NEUTRAL": "dim white", "COUNTER": "bold red", "UNAVAILABLE": "dim"}
+        t.add_row("MTF", f"[{_mtf_colors.get(_mtf, 'white')}]{_mtf}[/{_mtf_colors.get(_mtf, 'white')}]")
     if sig.ai_confidence is not None:
-        conf_col = "green" if sig.ai_confidence >= AI_CONFIDENCE_THRESHOLD else "yellow"
-        t.add_row("AI Confidence", f"[{conf_col}]{sig.ai_confidence*100:.0f}%  (LM Studio)[/{conf_col}]")
+        conf_col = "green" if sig.ai_confidence >= 0.50 else "yellow"
+        t.add_row("AI Conf",  f"[{conf_col}]{sig.ai_confidence*100:.0f}%[/{conf_col}]")
+    score = getattr(sig, "score_total", None)
+    if score is not None:
+        t.add_row("Score",  f"[bold white]{score:.0f}[/bold white]")
 
-    console.print(Panel(t, title="[bold green]🟢  BUY SIGNAL[/bold green]",
-                        border_style="green", expand=False))
+    console.print(Panel(
+        t,
+        title=f"[bold green]🟢  BUY SIGNAL  [dim]{ts}[/dim][/bold green]",
+        border_style="green",
+        expand=False,
+    ))
 
 
 # ── SELL signal ───────────────────────────────────────────────────────────────
 
 def print_sell_signal(sig: SellSignalResult) -> None:
-    ts = sig.timestamp.astimezone(_tz).strftime("%Y-%m-%d  %I:%M:%S %p %Z")
+    ts = sig.timestamp.astimezone(_tz).strftime("%I:%M:%S %p")
 
-    t = Table(box=box.HEAVY_HEAD, show_header=False, padding=(0, 1),
-              border_style="red")
-    t.add_column("Field",  style="bold white",  no_wrap=True)
-    t.add_column("Value",  style="bright_white", no_wrap=False)
+    t = Table(box=box.SIMPLE, show_header=False, padding=(0, 1), border_style="red")
+    t.add_column("k", style="bold white",   no_wrap=True, min_width=12)
+    t.add_column("v", style="bright_white", no_wrap=False)
 
-    t.add_row("Symbol",           f"[bold cyan]{sig.asset}[/bold cyan]")
-    t.add_row("Asset Class",      _asset_class_label(sig.asset))
-    t.add_row("Timeframe",        sig.timeframe)
-    t.add_row("Strategy Mode",    f"[bold]{getattr(sig, 'strategy_mode', 'UNKNOWN')}[/bold]")
-    t.add_row("Signal Date/Time", f"[bold]{ts}[/bold]")
-    t.add_row("Points",           f"[bold red]{sig.points}/3  ✓[/bold red]" if sig.points == 3 else f"{sig.points}/3")
-    t.add_row("─" * 20,           "─" * 35)
-    t.add_row("Alligator",        f"{_tick(sig.alligator_point)}  Lips below teeth + jaw")
-    t.add_row("Stochastic",       f"{_tick(sig.stochastic_point)}  K or D entered below 20")
-    t.add_row("Vortex",           f"{_tick(sig.vortex_point)}  VI- crossed above VI+")
-    t.add_row("─" * 20,           "─" * 35)
-    t.add_row("Entry Price",      f"[bold yellow]{_fmt_price(sig.entry_price)}[/bold yellow]")
-    t.add_row("Stop Loss (2%)",   f"[red]{_fmt_price(sig.stop_loss)}  (hard ceiling)[/red]")
-    t.add_row("Est. Move",        f"[green]{_fmt_pct(sig.profit_estimate_pct)}[/green]")
-    t.add_row("Exit Trigger",     "Lips touches / crosses up to Teeth (exit short)")
-
+    t.add_row("Symbol",     f"[bold cyan]{sig.asset}[/bold cyan]  [dim]{sig.timeframe}[/dim]  {_asset_class_label(sig.asset)}")
+    t.add_row("Direction",  "[bold red]SHORT  ▼[/bold red]")
+    t.add_row("Entry",      f"[bold yellow]{_fmt_price(sig.entry_price)}[/bold yellow]")
+    t.add_row("Stop Loss",  f"[red]{_fmt_price(sig.stop_loss)}[/red]  [dim](+2% hard ceiling)[/dim]")
+    t.add_row("Est. Move",  f"[bold green]{_fmt_pct(sig.profit_estimate_pct)}[/bold green]")
+    t.add_row("Strategy",   f"[bold]{getattr(sig, 'strategy_mode', 'SCALP')}[/bold]")
+    t.add_row("Indicators", (
+        f"{_tick(sig.alligator_point)} Alligator  "
+        f"{_tick(sig.stochastic_point)} Stoch  "
+        f"{_tick(sig.vortex_point)} Vortex  "
+        f"[bold red]{sig.points}/3[/bold red]"
+    ))
+    _mtf = getattr(sig, "mtf_alignment", None)
+    if _mtf:
+        _mtf_colors = {"ALIGNED": "bold green", "NEUTRAL": "dim white", "COUNTER": "bold red", "UNAVAILABLE": "dim"}
+        t.add_row("MTF", f"[{_mtf_colors.get(_mtf, 'white')}]{_mtf}[/{_mtf_colors.get(_mtf, 'white')}]")
     if sig.ai_confidence is not None:
-        conf_col = "green" if sig.ai_confidence >= AI_CONFIDENCE_THRESHOLD else "yellow"
-        t.add_row("AI Confidence", f"[{conf_col}]{sig.ai_confidence*100:.0f}%  (LM Studio)[/{conf_col}]")
+        conf_col = "green" if sig.ai_confidence >= 0.50 else "yellow"
+        t.add_row("AI Conf",  f"[{conf_col}]{sig.ai_confidence*100:.0f}%[/{conf_col}]")
+    score = getattr(sig, "score_total", None)
+    if score is not None:
+        t.add_row("Score",  f"[bold white]{score:.0f}[/bold white]")
 
-    console.print(Panel(t, title="[bold red]🔴  SELL SIGNAL[/bold red]",
-                        border_style="red", expand=False))
+    console.print(Panel(
+        t,
+        title=f"[bold red]🔴  SELL SIGNAL  [dim]{ts}[/dim][/bold red]",
+        border_style="red",
+        expand=False,
+    ))
 
 
 # ── Order placed ─────────────────────────────────────────────────────────────

@@ -65,7 +65,7 @@ _CORE_CRYPTO_SYMBOLS: list[str] = [
 
 # Tier 2 — Core US momentum stocks (clean directional expansion)
 _CORE_MOMENTUM_STOCKS: list[str] = [
-    "NVDA", "TSLA", "AMD", "META", "AMZN", "NFLX", "SMCI",
+    "NVDA", "TSLA", "AMD", "META", "AMZN", "NFLX", "SMCI", "AMN",
 ]
 
 # Tier 3 — Index / index-style momentum (cleaner trend structure)
@@ -73,9 +73,9 @@ _CORE_INDEX_MOMENTUM: list[str] = [
     "QQQ", "SPY", "TQQQ",
 ]
 
-# Tier 4 — High-beta / leveraged ETFs (enable after bot is behaving well)
+# Tier 4 — High-beta / leveraged ETFs
 _HIGH_BETA_ETFS: list[str] = [
-    "SOXL", "TECL", "HIBL", "LABU",
+    "SOXL", "TECL", "HIBL", "LABU", "NVDL", "BITX",
 ]
 
 # Meme coin lane — stricter ATR + volume + liquidity gates (not part of Core 20)

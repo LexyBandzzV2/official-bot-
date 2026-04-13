@@ -76,14 +76,20 @@ class SignalEngine:
         sell_result = self._sell_worker.evaluate(ha_df)
 
         if buy_result.is_valid and sell_result.is_valid:
-            logger.warning(
-                "CONFLICT on %s %s — both signals valid.  Suppressing both.",
-                self.asset, self.timeframe,
-            )
-            buy_result.is_valid        = False
-            sell_result.is_valid       = False
-            buy_result.rejection_reason  = "CONFLICT_SUPPRESSED"
-            sell_result.rejection_reason = "CONFLICT_SUPPRESSED"
+            # Conflict: both fired in the window — keep the most recent one.
+            # Compare the last completion bar index; higher index = more recent.
+            buy_last  = buy_result.last_completion_bar  if hasattr(buy_result,  "last_completion_bar") else 0
+            sell_last = sell_result.last_completion_bar if hasattr(sell_result, "last_completion_bar") else 0
+            if sell_last > buy_last:
+                buy_result.is_valid = False
+                buy_result.rejection_reason = "CONFLICT_SUPPRESSED_SELL_NEWER"
+                logger.debug("CONFLICT on %s %s — sell newer (%d > %d), keeping SELL",
+                             self.asset, self.timeframe, sell_last, buy_last)
+            else:
+                sell_result.is_valid = False
+                sell_result.rejection_reason = "CONFLICT_SUPPRESSED_BUY_NEWER"
+                logger.debug("CONFLICT on %s %s — buy newer (%d >= %d), keeping BUY",
+                             self.asset, self.timeframe, buy_last, sell_last)
             return {"buy": buy_result, "sell": sell_result, "conflict": True}
 
         return {"buy": buy_result, "sell": sell_result, "conflict": False}

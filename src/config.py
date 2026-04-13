@@ -82,8 +82,8 @@ MAX_RISK_PER_TRADE:      float = float(os.getenv("MAX_RISK_PER_TRADE", "0.01")) 
 STOP_LOSS_PCT:           float = float(os.getenv("STOP_LOSS_PCT", "0.02"))        # 2 %
 MAX_DAILY_DRAWDOWN:      float = float(os.getenv("MAX_DAILY_DRAWDOWN", "0.10"))   # 10 %
 MAX_TRADES_PER_HOUR:     int   = int(os.getenv("MAX_TRADES_PER_HOUR", "15"))      # hard cap
-ML_CONFIDENCE_THRESHOLD: float = float(os.getenv("ML_CONFIDENCE_THRESHOLD", "0.65"))
-AI_CONFIDENCE_THRESHOLD: float = float(os.getenv("AI_CONFIDENCE_THRESHOLD", "0.60"))
+ML_CONFIDENCE_THRESHOLD: float = float(os.getenv("ML_CONFIDENCE_THRESHOLD", "0.0"))
+AI_CONFIDENCE_THRESHOLD: float = float(os.getenv("AI_CONFIDENCE_THRESHOLD", "0.0"))
 
 # Peak-giveback exit — bar-close retracement guard (formerly "trailing take-profit").
 # The canonical env vars are PEAK_GIVEBACK_ENABLED / PEAK_GIVEBACK_FRACTION.
@@ -199,7 +199,7 @@ REGIME_SCORE_BIAS_LOW_VOL:    float = float(os.getenv("REGIME_SCORE_BIAS_LOW_VOL
 REGIME_SCORE_BIAS_UNCERTAIN:  float = float(os.getenv("REGIME_SCORE_BIAS_UNCERTAIN",  "0.0"))
 
 # Entry filter: enable/disable + minimum score per macro regime
-REGIME_ENTRY_FILTER_ENABLED:  bool  = os.getenv("REGIME_ENTRY_FILTER_ENABLED", "true").lower() in ("1", "true", "yes")
+REGIME_ENTRY_FILTER_ENABLED:  bool  = os.getenv("REGIME_ENTRY_FILTER_ENABLED", "false").lower() in ("1", "true", "yes")
 REGIME_ENTRY_MIN_SCORE_TRENDING:  float = float(os.getenv("REGIME_ENTRY_MIN_SCORE_TRENDING",  "30.0"))
 REGIME_ENTRY_MIN_SCORE_RANGING:   float = float(os.getenv("REGIME_ENTRY_MIN_SCORE_RANGING",   "50.0"))
 REGIME_ENTRY_MIN_SCORE_HIGH_VOL:  float = float(os.getenv("REGIME_ENTRY_MIN_SCORE_HIGH_VOL",  "45.0"))
@@ -228,7 +228,7 @@ REGIME_EXIT_FADE_MULT_LOW_VOL:    float = float(os.getenv("REGIME_EXIT_FADE_MULT
 # Master on/off switch — when False the resolver is bypassed and every signal is
 # treated as ACTIVE / no friction (safe-fail open for backwards compatibility).
 SUITABILITY_GATING_ENABLED: bool = (
-    os.getenv("SUITABILITY_GATING_ENABLED", "true").lower() in ("1", "true", "yes")
+    os.getenv("SUITABILITY_GATING_ENABLED", "false").lower() in ("1", "true", "yes")
 )
 
 # Threshold-raise: add these many score-points to the entry-filter minimum for
@@ -268,10 +268,10 @@ UNIVERSE_CORE_INDEX_MOMENTUM_ENABLED: bool = (
     os.getenv("UNIVERSE_CORE_INDEX_MOMENTUM_ENABLED", "true").lower() in ("1", "true", "yes")
 )
 UNIVERSE_HIGH_BETA_ETFS_ENABLED: bool = (
-    os.getenv("UNIVERSE_HIGH_BETA_ETFS_ENABLED", "false").lower() in ("1", "true", "yes")
+    os.getenv("UNIVERSE_HIGH_BETA_ETFS_ENABLED", "true").lower() in ("1", "true", "yes")
 )
 UNIVERSE_MEME_COIN_LANE_ENABLED: bool = (
-    os.getenv("UNIVERSE_MEME_COIN_LANE_ENABLED", "false").lower() in ("1", "true", "yes")
+    os.getenv("UNIVERSE_MEME_COIN_LANE_ENABLED", "true").lower() in ("1", "true", "yes")
 )
 
 # ATR% minimum thresholds per strategy mode
