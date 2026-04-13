@@ -16,6 +16,7 @@ supabase>=2.0.0
 # Market data
 ccxt>=4.0.0
 yfinance>=0.2.28
+alpaca-py>=0.8.0
 # openbb>=4.7.1  # disabled: openbb 4.7.1 has a runtime bug (OBBject_EquityInfo not in
 #                # openbb_core.app.provider_interface namespace). Re-enable when fixed upstream.
 requests>=2.31.0

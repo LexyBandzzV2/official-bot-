@@ -41,7 +41,6 @@ try:
     from src.config import (
         TIMEZONE, MAX_RISK_PER_TRADE, STOP_LOSS_PCT,
         MAX_DAILY_DRAWDOWN, MAX_TRADES_PER_HOUR, ACCOUNT_BALANCE,
-        AI_CONFIDENCE_THRESHOLD,
         PEAK_GIVEBACK_ENABLED, PEAK_GIVEBACK_FRACTION, PEAK_GIVEBACK_MIN_MFE_PCT,
         TRADING_MODE,
         SCALP_ATR_MULTIPLIER, SCALP_MOMENTUM_FADE_WINDOW, SCALP_MOMENTUM_FADE_TIGHTEN_FRAC,
@@ -61,10 +60,7 @@ try:
     from src.risk.alligator_trailing_tp import AlligatorTrailingTP
     from src.signals.types         import TradeRecord, BuySignalResult, SellSignalResult
     from src.scanner.candidate_ranker import score_symbol, rank_candidates
-    # Final Sprint: asset universe + prefilter layer
     from src.scanner.asset_universe import filter_to_universe, get_entry as _universe_get_entry
-    from src.scanner.prefilters import run_prefilter
-    from src.signals.strategy_mode import timeframe_to_mode as _timeframe_to_mode
     from src.display.tables        import (
         print_buy_signal, print_sell_signal, print_trade_closed, print_kill_switch,
         print_active_signals, print_trail_update,
@@ -77,14 +73,13 @@ try:
         notify_buy_signal, notify_sell_signal, notify_trade_closed, notify_kill_switch,
     )
     from src.ai.signal_ranker      import rank_signal
-    from src.signals.score_engine  import compute_score, apply_ai_effect
+    from src.signals.score_engine  import compute_score
     from src.indicators.alligator  import calculate_alligator, check_lips_touch_teeth_down, check_lips_touch_teeth_up
     from src.notifications.trade_candidate_logger import get_trade_candidate_logger
     # Phase 11: regime engine + gating (optional — scanner degrades gracefully without it)
     try:
         from src.signals.regime_engine import classify as _regime_classify, should_persist as _regime_should_persist
         from src.signals.regime_gating import (
-            resolve_ai_threshold as _resolve_ai_threshold,
             resolve_position_size_factor as _resolve_size_factor,
             build_regime_context_for_signal as _build_regime_ctx,
         )
@@ -318,38 +313,15 @@ class MarketScanner:
             log.warning("No data received for any symbol this cycle")
             return
 
-        # Step 2: Score candidates
+        # Step 2: Score candidates — all symbols proceed directly to signal eval
         scores = []
         for sym, ha_df in ha_data.items():
             sc = score_symbol(sym, self.timeframe, ha_df)
             if sc:
                 scores.append(sc)
-        # Prefilter removed — all scored symbols proceed to signal evaluation.
-        # We still build a minimal lookup so prefilter audit fields are stamped.
-        _mode_str = _timeframe_to_mode(self.timeframe).value
-        prefilter_results: list = []
-        for sc in scores:
-            _ha = ha_data.get(sc.symbol)
-            _avg_vol = 0.0
-            if _ha is not None and "volume" in _ha.columns and len(_ha) >= 20:
-                _avg_vol = float(_ha["volume"].tail(20).median())
-            pfr = run_prefilter(
-                symbol=sc.symbol,
-                atr_pct=sc.atr_pct,
-                volume_ratio=sc.volume_ratio,
-                avg_volume=_avg_vol,
-                mode=_mode_str,
-                alligator_spread=sc.alligator_spread,
-            )
-            pfr.passed = True   # prefilter is disabled — all pass
-            pfr.skip_reason = ""
-            prefilter_results.append(pfr)
 
-        top_symbols = {r.symbol for r in prefilter_results}
-        log.info("Prefilter disabled — all %d scored symbols proceed to signal eval", len(top_symbols))
-
-        # Build a lookup for prefilter metadata to stamp on signals later
-        self._prefilter_lookup: dict = {r.symbol: r for r in prefilter_results}
+        top_symbols = {sc.symbol for sc in scores}
+        log.debug("Scored %d symbols — all proceed to signal eval", len(top_symbols))
 
         # Step 3: Update open positions first (trailing stop + exit checks)
         self._update_open_positions(ha_data)
@@ -392,16 +364,6 @@ class MarketScanner:
             if regime_ctx is not None:
                 log.debug("%s/%s signal %s: %s", sym, self.timeframe, sig_key.upper(),
                           regime_ctx.to_log_str())
-
-            # Final Sprint: stamp prefilter audit fields on signal
-            _pfr = getattr(self, "_prefilter_lookup", {}).get(sym)
-            if _pfr is not None:
-                sig.prefilter_universe_group = _pfr.universe_group
-                sig.prefilter_atr_pct        = _pfr.atr_pct
-                sig.prefilter_volume_ratio   = _pfr.volume_ratio
-                sig.prefilter_rank_score     = _pfr.rank_score
-                sig.prefilter_passed         = _pfr.passed
-                sig.prefilter_skip_reason    = _pfr.skip_reason
 
             ts_str = datetime.now(_tz).strftime("%Y-%m-%d %I:%M:%S %p %Z")
 
@@ -470,16 +432,12 @@ class MarketScanner:
                     continue
 
             # AI confidence
-            ai_score = rank_signal(sig)
-            sig.ai_confidence = ai_score
-            # Phase 5: apply AI effect to score
-            # Phase 11: regime-adjusted AI threshold
-            _ai_threshold = (
-                _resolve_ai_threshold(AI_CONFIDENCE_THRESHOLD, regime_ctx)  # type: ignore[possibly-unbound]
-                if _REGIME_AVAILABLE else AI_CONFIDENCE_THRESHOLD
-            )
-            apply_ai_effect(sig, ai_score, _ai_threshold)
-            # AI/ML gate removed — score is computed for info only, never rejects
+            # AI confidence (info only — never gates signals)
+            try:
+                ai_score = rank_signal(sig)
+                sig.ai_confidence = ai_score
+            except Exception:
+                pass
 
             # Risk manager approval
             approved, reason = self.risk_manager.approve_signal(sig)

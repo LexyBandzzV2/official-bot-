@@ -106,11 +106,98 @@ except ImportError:
     POLYGON_API_KEY  = ""
 
 try:
+    from src.config import ALPACA_API_KEY, ALPACA_SECRET_KEY
+except ImportError:
+    ALPACA_API_KEY    = ""
+    ALPACA_SECRET_KEY = ""
+
+# Alpaca market-data SDK (alpaca-py)
+try:
+    from alpaca.data import StockHistoricalDataClient                      # type: ignore
+    from alpaca.data.requests import StockBarsRequest                      # type: ignore
+    from alpaca.data.timeframe import TimeFrame, TimeFrameUnit             # type: ignore
+    _ALPACA_DATA_AVAILABLE = True
+except ImportError:
+    _ALPACA_DATA_AVAILABLE = False
+
+try:
     from src.data.symbol_mapper import to_ccxt, to_yfinance, to_finnhub
 except ImportError:
     def to_ccxt(symbol: str) -> str | None:     return None  # type: ignore[misc]
     def to_yfinance(symbol: str) -> str | None: return None  # type: ignore[misc]
     def to_finnhub(symbol: str) -> str | None:  return None  # type: ignore[misc]
+
+
+# ── Alpaca timeframe mapping ──────────────────────────────────────────────────
+_ALPACA_TF_MAP: dict = {}  # populated lazily when SDK is available
+
+
+def _alpaca_timeframe(timeframe: str):  # type: ignore[return]
+    """Convert canonical timeframe string to Alpaca TimeFrame object."""
+    if not _ALPACA_DATA_AVAILABLE:
+        return None
+    _map = {
+        "1m":  TimeFrame(1,  TimeFrameUnit.Minute),   # type: ignore[possibly-unbound]
+        "3m":  TimeFrame(3,  TimeFrameUnit.Minute),   # type: ignore[possibly-unbound]
+        "5m":  TimeFrame(5,  TimeFrameUnit.Minute),   # type: ignore[possibly-unbound]
+        "15m": TimeFrame(15, TimeFrameUnit.Minute),   # type: ignore[possibly-unbound]
+        "30m": TimeFrame(30, TimeFrameUnit.Minute),   # type: ignore[possibly-unbound]
+        "1h":  TimeFrame(1,  TimeFrameUnit.Hour),     # type: ignore[possibly-unbound]
+        "2h":  TimeFrame(2,  TimeFrameUnit.Hour),     # type: ignore[possibly-unbound]
+        "4h":  TimeFrame(4,  TimeFrameUnit.Hour),     # type: ignore[possibly-unbound]
+        "1d":  TimeFrame(1,  TimeFrameUnit.Day),      # type: ignore[possibly-unbound]
+        "1w":  TimeFrame(1,  TimeFrameUnit.Week),     # type: ignore[possibly-unbound]
+    }
+    return _map.get(timeframe)
+
+
+def _fetch_alpaca(
+    symbol:    str,
+    timeframe: str,
+    start:     datetime,
+    end:       datetime,
+) -> pd.DataFrame:
+    """Fetch OHLCV bars from Alpaca Markets (stocks only).
+
+    Uses the free SIP feed for paper accounts.  Data may be 15 minutes
+    delayed — that is acceptable and never causes a rejection.
+    Falls back gracefully to yfinance if credentials are missing or the
+    request fails for any reason.
+    """
+    if not _ALPACA_DATA_AVAILABLE:
+        raise RuntimeError("alpaca-py not installed")
+    if not ALPACA_API_KEY or not ALPACA_SECRET_KEY:
+        raise RuntimeError("ALPACA_API_KEY / ALPACA_SECRET_KEY not set in .env")
+
+    tf = _alpaca_timeframe(timeframe)
+    if tf is None:
+        raise RuntimeError(f"Alpaca does not support timeframe {timeframe!r}")
+
+    client = StockHistoricalDataClient(   # type: ignore[possibly-unbound]
+        api_key=ALPACA_API_KEY,
+        secret_key=ALPACA_SECRET_KEY,
+    )
+    req = StockBarsRequest(               # type: ignore[possibly-unbound]
+        symbol_or_symbols=symbol,
+        timeframe=tf,
+        start=start,
+        end=end,
+        feed="iex",      # IEX feed — free, works with paper account
+    )
+    bars = client.get_stock_bars(req)
+    df = bars.df  # MultiIndex (symbol, timestamp) when multi-symbol
+    if df.empty:
+        return pd.DataFrame()
+
+    # Flatten MultiIndex if present
+    if isinstance(df.index, pd.MultiIndex):
+        df = df.xs(symbol, level=0) if symbol in df.index.get_level_values(0) else df.reset_index(level=0, drop=True)
+
+    df = df.reset_index()
+    # Alpaca columns: timestamp, open, high, low, close, volume, trade_count, vwap
+    rename = {"timestamp": "time"}
+    df = df.rename(columns=rename)
+    return _normalise(df)
 
 
 def _resolve_symbol(symbol: str, source: str) -> str:
@@ -569,6 +656,25 @@ def get_historical_ohlcv(
                 errors.append("ibkr: client not available")
         except Exception as e:
             errors.append(f"ibkr: {e}")
+
+    if source == "alpaca":
+        # Primary for US stocks — IEX feed (free, paper-account compatible).
+        # Falls through to yfinance seamlessly; delayed data is never rejected.
+        try:
+            df = _fetch_alpaca(symbol, timeframe, start_utc, end_utc)
+            if not df.empty:
+                return df
+        except Exception as e:
+            errors.append(f"alpaca: {e}")
+        # Fallback: yfinance (15-min delayed is acceptable — never rejected)
+        try:
+            resolved_yf = _resolve_symbol(symbol, "yfinance")
+            df = _fetch_yfinance(resolved_yf, timeframe, start_utc, end_utc)
+            if not df.empty:
+                log.debug("Alpaca unavailable for %s — used yfinance fallback", symbol)
+                return df
+        except Exception as e:
+            errors.append(f"alpaca-yfinance-fallback: {e}")
 
     if source == "ccxt":
         try:

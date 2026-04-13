@@ -112,18 +112,17 @@ def score_symbol(
 def rank_candidates(
     scores: list[CandidateScore],
     top_n:  int = 10,
-    min_atr: float = 0.05,
+    min_atr: float = 0.0,   # no minimum — all symbols pass
 ) -> list[CandidateScore]:
-    """Sort by total_score descending, filter out low-volatility symbols.
+    """Sort candidates by total_score descending.  No ATR cutoff applied.
 
     Args:
         scores:   list of CandidateScore objects
-        top_n:    return at most this many candidates
-        min_atr:  minimum ATR% to include (filters out flat markets)
+        top_n:    kept for API compatibility — ignored (all symbols returned)
+        min_atr:  kept for API compatibility — ignored (no ATR gate)
 
     Returns:
-        Sorted, filtered list of top candidates.
+        All candidates sorted by score descending.
     """
-    filtered = [s for s in scores if s.atr_pct >= min_atr]
-    filtered.sort(key=lambda x: x.total_score, reverse=True)
-    return filtered[:top_n]
+    sorted_scores = sorted(scores, key=lambda x: x.total_score, reverse=True)
+    return sorted_scores

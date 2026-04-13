@@ -255,9 +255,8 @@ SUITABILITY_LOW_SCORE_PENALTY: float = float(
     os.getenv("SUITABILITY_LOW_SCORE_PENALTY", "8.0")
 )
 
-# ── Final Sprint: Asset Universe & Prefilter Layer ────────────────────────────
-
-# Universe group enable/disable flags
+# ── Asset Universe ────────────────────────────────────────────────────────────
+# Universe group enable/disable flags (all on by default)
 UNIVERSE_CORE_CRYPTO_ENABLED: bool = (
     os.getenv("UNIVERSE_CORE_CRYPTO_ENABLED", "true").lower() in ("1", "true", "yes")
 )
@@ -272,26 +271,4 @@ UNIVERSE_HIGH_BETA_ETFS_ENABLED: bool = (
 )
 UNIVERSE_MEME_COIN_LANE_ENABLED: bool = (
     os.getenv("UNIVERSE_MEME_COIN_LANE_ENABLED", "true").lower() in ("1", "true", "yes")
-)
-
-# ATR% minimum thresholds per strategy mode
-PREFILTER_ATR_MIN_SCALP:        float = float(os.getenv("PREFILTER_ATR_MIN_SCALP",        "1.5"))
-PREFILTER_ATR_MIN_INTERMEDIATE: float = float(os.getenv("PREFILTER_ATR_MIN_INTERMEDIATE",  "2.0"))
-PREFILTER_ATR_MIN_SWING:        float = float(os.getenv("PREFILTER_ATR_MIN_SWING",         "2.5"))
-
-# Volume expansion thresholds (multiples of 20-bar average)
-PREFILTER_VOLUME_EXPANSION_NORMAL: float = float(os.getenv("PREFILTER_VOLUME_EXPANSION_NORMAL", "0.70"))
-PREFILTER_VOLUME_EXPANSION_WEAK:   float = float(os.getenv("PREFILTER_VOLUME_EXPANSION_WEAK",   "1.0"))
-
-# Meme-coin lane stricter thresholds
-PREFILTER_MEME_ATR_MIN:          float = float(os.getenv("PREFILTER_MEME_ATR_MIN",          "3.0"))
-PREFILTER_MEME_VOLUME_MIN:       float = float(os.getenv("PREFILTER_MEME_VOLUME_MIN",       "2.0"))
-PREFILTER_MEME_AVG_VOLUME_FLOOR: float = float(os.getenv("PREFILTER_MEME_AVG_VOLUME_FLOOR", "100000"))
-
-# Top-N candidate cap (how many symbols survive into deep evaluation)
-PREFILTER_TOP_N: int = int(os.getenv("PREFILTER_TOP_N", "10"))
-
-# Quality-first mode — when True, raises all ATR thresholds by 50%
-PREFILTER_QUALITY_FIRST: bool = (
-    os.getenv("PREFILTER_QUALITY_FIRST", "false").lower() in ("1", "true", "yes")
 )
