@@ -44,7 +44,7 @@ _TF_MINUTES: dict[str, int] = {
     "1d":  1440,
 }
 
-_WINDOW_CANDLES = 25
+_WINDOW_CANDLES = 50
 
 
 # ── Signal memory store ───────────────────────────────────────────────────────
