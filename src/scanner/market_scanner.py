@@ -392,6 +392,17 @@ class MarketScanner:
         except Exception as _tbl_err:
             log.debug("print_scan_status_table failed: %s", _tbl_err)
 
+        # Flush buffered signal boxes AFTER the banner + table
+        for _sig_type, _sig_obj in getattr(self, "_pending_signal_prints", []):
+            try:
+                if _sig_type == "BUY":
+                    print_buy_signal(_sig_obj)
+                else:
+                    print_sell_signal(_sig_obj)
+            except Exception:
+                pass
+        self._pending_signal_prints = []
+
     def _evaluate_symbol(self, sym: str, ha_df: pd.DataFrame) -> None:
         engine = self._get_engine(sym)
         result = engine.evaluate_ha(ha_df)
@@ -573,12 +584,15 @@ class MarketScanner:
                 None,
             )
 
+            # Buffer signal box for display AFTER OWL STALK banner + scan table
+            if not hasattr(self, "_pending_signal_prints"):
+                self._pending_signal_prints = []
+            self._pending_signal_prints.append((sig.signal_type, sig))
+
             if sig.signal_type == "BUY":
-                print_buy_signal(sig)
                 notify_buy_signal(sym, self.timeframe, sig.entry_price, sig.stop_loss,
                                   sig.profit_estimate_pct, None, ts_str)
             else:
-                print_sell_signal(sig)
                 notify_sell_signal(sym, self.timeframe, sig.entry_price, sig.stop_loss,
                                    sig.profit_estimate_pct, None, ts_str)
 
