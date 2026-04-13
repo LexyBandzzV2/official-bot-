@@ -504,6 +504,93 @@ def print_ai_unavailable(signal_type: str, asset: str, score: float = 0.4) -> No
     )
 
 
+# ── Scan status table ────────────────────────────────────────────────────────
+
+def print_scan_status_table(scan_results: list[dict]) -> None:
+    """Print a compact table showing all scanned assets and their indicator status.
+
+    scan_results: list of dicts with keys:
+        symbol, timeframe, buy_pts, sell_pts,
+        alligator_ok, stoch_ok, vortex_ok,
+        signal_type (None | "BUY" | "SELL"),
+        mtf_status (str | None)
+    """
+    if not scan_results:
+        return
+
+    t = Table(
+        title=f"[dim]Scan snapshot — {_now_str()}[/dim]",
+        box=box.SIMPLE,
+        show_header=True,
+        header_style="bold dim",
+        padding=(0, 1),
+    )
+    t.add_column("Symbol",     style="bold cyan",  no_wrap=True, min_width=8)
+    t.add_column("Signal",     no_wrap=True,       min_width=11)
+    t.add_column("B pts",      no_wrap=True,       min_width=5)
+    t.add_column("S pts",      no_wrap=True,       min_width=5)
+    t.add_column("Indicators", no_wrap=True,       min_width=30)
+    t.add_column("MTF",        no_wrap=True,       min_width=12)
+
+    for row in scan_results:
+        sym            = row.get("symbol", "?")
+        sig_type       = row.get("signal_type")       # None | "BUY" | "SELL"
+        buy_pts        = int(row.get("buy_pts", 0))
+        sell_pts       = int(row.get("sell_pts", 0))
+        alligator_ok   = bool(row.get("alligator_ok", False))
+        stoch_ok       = bool(row.get("stoch_ok", False))
+        vortex_ok      = bool(row.get("vortex_ok", False))
+        mtf            = row.get("mtf_status") or "—"
+
+        # ── Signal cell ──────────────────────────────────────────────────
+        if sig_type == "BUY":
+            sig_cell = "[bold green]BUY  ▲[/bold green]"
+        elif sig_type == "SELL":
+            sig_cell = "[bold red]SELL ▼[/bold red]"
+        else:
+            sig_cell = "[dim]No signal[/dim]"
+
+        # ── Points cells (colour-coded) ──────────────────────────────────
+        def _pts_cell(pts: int, direction: str) -> str:
+            col = "green" if direction == "BUY" else "red"
+            if pts == 3:
+                return f"[bold {col}]{pts}/3[/bold {col}]"
+            if pts == 2:
+                return f"[yellow]{pts}/3[/yellow]"
+            return f"[dim]{pts}/3[/dim]"
+
+        buy_cell  = _pts_cell(buy_pts,  "BUY")
+        sell_cell = _pts_cell(sell_pts, "SELL")
+
+        # ── Indicator cell ───────────────────────────────────────────────
+        ind_cell = (
+            f"{_tick(alligator_ok)} Alligator  "
+            f"{_tick(stoch_ok)} Stoch  "
+            f"{_tick(vortex_ok)} Vortex"
+        )
+
+        # ── MTF cell ─────────────────────────────────────────────────────
+        _mtf_cols = {
+            "ALIGNED":     "bold green",
+            "NEUTRAL":     "dim white",
+            "COUNTER":     "bold red",
+            "UNAVAILABLE": "dim",
+            "PENDING":     "yellow",
+        }
+        mtf_col  = _mtf_cols.get(str(mtf).upper(), "white")
+        mtf_cell = f"[{mtf_col}]{mtf}[/{mtf_col}]"
+
+        # ── Row style ────────────────────────────────────────────────────
+        row_style = ""
+        if sig_type is None:
+            row_style = "dim"
+
+        t.add_row(sym, sig_cell, buy_cell, sell_cell, ind_cell, mtf_cell,
+                  style=row_style)
+
+    console.print(t)
+
+
 # ── Internal helper ───────────────────────────────────────────────────────────
 
 def _asset_class_label(symbol: str, plain: bool = False) -> str:

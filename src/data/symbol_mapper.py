@@ -44,6 +44,14 @@ ASSET_CATALOGUE: Dict[str, dict] = {
     "INJUSD":  {"class": "crypto",     "ccxt": "INJ/USDT",          "yf": "INJ-USD",    "display": "INJ/USD"},
     "ARBUSD":  {"class": "crypto",     "ccxt": "ARB/USDT",          "yf": "ARB-USD",    "display": "ARB/USD"},
     "APTUSD":  {"class": "crypto",     "ccxt": "APT/USDT",          "yf": "APT-USD",    "display": "APT/USD"},
+    # Meme coins (slash-form in asset_universe — canonical keys after stripping slash)
+    "SHIBUSD": {"class": "crypto",     "ccxt": "SHIB/USDT",         "yf": "SHIB-USD",   "display": "SHIB/USD"},
+    "PEPEUSD": {"class": "crypto",     "ccxt": "PEPE/USDT",         "yf": "PEPE-USD",   "display": "PEPE/USD"},
+    "FLOKIUSD":{"class": "crypto",     "ccxt": "FLOKI/USDT",        "yf": "FLOKI-USD",  "display": "FLOKI/USD"},
+    "WIFUSD":  {"class": "crypto",     "ccxt": "WIF/USDT",          "yf": "WIF-USD",    "display": "WIF/USD"},
+    "BONKUSD": {"class": "crypto",     "ccxt": "BONK/USDT",         "yf": "BONK-USD",   "display": "BONK/USD"},
+    "MEMEUSD": {"class": "crypto",     "ccxt": "MEME/USDT",         "yf": "MEME-USD",   "display": "MEME/USD"},
+    "TURBOUSD":{"class": "crypto",     "ccxt": "TURBO/USDT",        "yf": "TURBO-USD",  "display": "TURBO/USD"},
 
     # Commodities
     "XAUUSD":  {"class": "commodity",  "finnhub": "OANDA:XAU_USD",  "yf": "GC=F",       "display": "Gold"},

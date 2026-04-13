@@ -63,7 +63,7 @@ try:
     from src.scanner.asset_universe import filter_to_universe, get_entry as _universe_get_entry
     from src.display.tables        import (
         print_buy_signal, print_sell_signal, print_trade_closed, print_kill_switch,
-        print_active_signals, print_trail_update,
+        print_active_signals, print_trail_update, print_scan_status_table,
     )
     from src.notifications.logger  import (
         log_signal, log_trade_open, log_trade_close, log_rejection, log_kill_switch,
@@ -289,6 +289,9 @@ class MarketScanner:
             log.info("Scan cycle starting at %s for %d symbols", now_str, len(self.symbols))
         self._scan_count = getattr(self, "_scan_count", 0) + 1
 
+        # Reset per-cycle scan status collector
+        self._scan_status: list[dict] = []
+
         # Step 1: Fetch + convert HA for all symbols
         import pandas as _pd
         ha_data: dict[str, _pd.DataFrame] = {}  # symbol → ha_df
@@ -298,6 +301,18 @@ class MarketScanner:
                 # Use configured data source if set, otherwise auto-detect
                 src = self.data_source if self.data_source else best_source(sym)
                 raw_df = get_latest_candles(sym, self.timeframe, self.candles_lookback, source=src)
+                if raw_df.empty and get_asset_class(sym) != "crypto":
+                    # Primary source returned nothing for non-crypto — try yfinance as last resort
+                    if src != "yfinance":
+                        log.debug(
+                            "Primary fetch empty for %s (source=%s) -- retrying with yfinance", sym, src
+                        )
+                        try:
+                            raw_df = get_latest_candles(sym, self.timeframe, self.candles_lookback, source="yfinance")
+                            if not raw_df.empty:
+                                log.debug("Used yfinance fallback for %s (primary source=%s)", sym, src)
+                        except Exception as _yf_err:
+                            log.debug("yfinance fallback also failed for %s: %s", sym, _yf_err)
                 if raw_df.empty:
                     failed_fetches.append(sym)
                     continue
@@ -305,9 +320,20 @@ class MarketScanner:
                 ha_data[sym] = ha_df
             except Exception as e:
                 log.debug("Data fetch failed for %s: %s", sym, e)
+                # Last-resort yfinance retry on exception
+                if self.data_source != "yfinance":
+                    try:
+                        raw_df = get_latest_candles(sym, self.timeframe, self.candles_lookback, source="yfinance")
+                        if not raw_df.empty:
+                            log.debug("Used yfinance fallback for %s after exception", sym)
+                            ha_df = convert_to_heikin_ashi(raw_df)
+                            ha_data[sym] = ha_df
+                            continue
+                    except Exception as _yf_err2:
+                        log.debug("yfinance fallback also failed for %s: %s", sym, _yf_err2)
                 failed_fetches.append(sym)
         if failed_fetches:
-            log.debug("Data unavailable for: %s", ", ".join(failed_fetches))
+            log.info("Failed to fetch data for: %s", failed_fetches)
 
         if not ha_data:
             log.warning("No data received for any symbol this cycle")
@@ -343,12 +369,47 @@ class MarketScanner:
             except Exception as e:
                 log.error("Signal eval failed for %s: %s", sym, e)
 
+        # Print compact status table for every scanned asset this cycle
+        try:
+            if self._scan_status:
+                print_scan_status_table(self._scan_status)
+        except Exception as _tbl_err:
+            log.debug("print_scan_status_table failed: %s", _tbl_err)
+
     def _evaluate_symbol(self, sym: str, ha_df: pd.DataFrame) -> None:
         engine = self._get_engine(sym)
         result = engine.evaluate_ha(ha_df)
 
         # Phase 11: classify regime once per symbol/cycle before evaluating signals
         regime_ctx = self._classify_regime(sym, ha_df)
+
+        # ── Collect per-symbol scan status for the end-of-cycle status table ──
+        # Determine which signal (if any) is accepted at this point (pre-filter).
+        # We capture indicator state from whichever signal has points > 0.
+        _buy_sig  = result.get("buy")
+        _sell_sig = result.get("sell")
+        _status_sig_type: str | None = None
+        if _buy_sig  and getattr(_buy_sig,  "is_valid", False): _status_sig_type = "BUY"
+        elif _sell_sig and getattr(_sell_sig, "is_valid", False): _status_sig_type = "SELL"
+        _ref_sig = _buy_sig if _buy_sig else _sell_sig  # for indicator state fallback
+        _mtf_raw = getattr(_ref_sig, "mtf_alignment", None) if _ref_sig else None
+        _scan_entry: dict = {
+            "symbol":       sym,
+            "timeframe":    self.timeframe,
+            "buy_pts":      getattr(_buy_sig,  "points", 0) if _buy_sig  else 0,
+            "sell_pts":     getattr(_sell_sig, "points", 0) if _sell_sig else 0,
+            "alligator_ok": getattr(_buy_sig,  "alligator_ok",  getattr(_buy_sig,  "alligator_point",  False)) if _buy_sig  else
+                            getattr(_sell_sig, "alligator_ok",  getattr(_sell_sig, "alligator_point",  False)) if _sell_sig else False,
+            "stoch_ok":     getattr(_buy_sig,  "stochastic_ok", getattr(_buy_sig,  "stochastic_point", False)) if _buy_sig  else
+                            getattr(_sell_sig, "stochastic_ok", getattr(_sell_sig, "stochastic_point", False)) if _sell_sig else False,
+            "vortex_ok":    getattr(_buy_sig,  "vortex_ok",     getattr(_buy_sig,  "vortex_point",     False)) if _buy_sig  else
+                            getattr(_sell_sig, "vortex_ok",     getattr(_sell_sig, "vortex_point",     False)) if _sell_sig else False,
+            "signal_type":  _status_sig_type,
+            "mtf_status":   _mtf_raw or "—",
+        }
+        if not hasattr(self, "_scan_status"):
+            self._scan_status = []
+        self._scan_status.append(_scan_entry)
 
         for sig_key in ("buy", "sell"):
             sig = result.get(sig_key)
@@ -445,14 +506,15 @@ class MarketScanner:
                 self._reject_signal(sig, ha_df, reason)
                 continue
 
-            # MTF alignment check — block COUNTER signals, allow ALIGNED/NEUTRAL/UNAVAILABLE
+            # Cross-TF confirmation — signal fires when two adjacent TFs agree within 25 candles
             try:
-                from src.signals.mtf_filter import check_mtf_alignment
-                _mtf = check_mtf_alignment(sym, self.timeframe, sig.signal_type.lower())
-                sig.mtf_alignment = _mtf
-                if _mtf == "COUNTER":
-                    self._reject_signal(sig, ha_df, f"MTF_COUNTER:{self.timeframe}")
-                    continue
+                from src.signals.mtf_filter import check_cross_tf_confirmation, signal_memory
+                signal_memory.cleanup()
+                _mtf_status = check_cross_tf_confirmation(sym, self.timeframe, sig.signal_type.lower())
+                sig.mtf_alignment = _mtf_status
+                if _mtf_status == "PENDING":
+                    log.debug("MTF pending for %s %s — waiting for adjacent TF confirmation", sym, self.timeframe)
+                    continue  # silently wait, don't log as rejection
             except Exception as _mtf_err:
                 log.debug("MTF check skipped for %s: %s", sym, _mtf_err)
 

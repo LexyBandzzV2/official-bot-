@@ -1,138 +1,160 @@
-"""Multi-Timeframe (MTF) Trend Filter.
+"""Cross-Timeframe Signal Confirmation (replaces single-bar MTF check).
 
-Before accepting a signal on the base timeframe, check the alligator
-direction on the confirmation timeframe.  This eliminates counter-trend
-entries — the most common cause of losing trades.
+Instead of checking alligator direction on a higher TF, this system tracks
+when full signals (3/3 confluence) fire across timeframes. A signal is
+CONFIRMED when two adjacent timeframes both show the same direction within
+a 25-candle window of each other.
 
-Timeframe hierarchy:
-    1m  → confirm on 2m
-    2m  → confirm on 3m
-    3m  → confirm on 5m
-    5m  → confirmed by 3m (lower chain: 3m already required 2m aligned)
-    15m → check on 5m
-    1h  → check on 15m
-    2h  → check on 1h
-    4h  → confirm on 1d (best-effort; 1d data slower)
-
-Return values:
-    "ALIGNED"      — confirmation TF alligator agrees with signal direction
-    "COUNTER"      — confirmation TF alligator opposes signal direction (block or reduce size)
-    "NEUTRAL"      — confirmation TF alligator tangled/indecisive (allow with normal sizing)
-    "UNAVAILABLE"  — Could not fetch confirmation TF data (fail-open: allow signal through)
+Adjacent timeframe pairs (either order counts):
+  1m <-> 2m <-> 3m <-> 5m <-> 15m <-> 1h <-> 2h <-> 4h
 """
 
 from __future__ import annotations
 
 import logging
+import threading
+from datetime import datetime, timezone
 from typing import Optional
-
-import pandas as pd
 
 log = logging.getLogger(__name__)
 
-# ── Timeframe confirmation map ────────────────────────────────────────────────
-_HIGHER_TF: dict[str, str] = {
-    "1m":  "2m",    # 1m confirms on 2m
-    "2m":  "3m",    # 2m confirms on 3m
-    "3m":  "5m",    # 3m confirms on 5m
-    "5m":  "3m",    # 5m confirmed by 3m (lower chain: 3m already required 2m aligned)
-    "15m": "5m",    # 15m checks 5m
-    "30m": "15m",
-    "1h":  "15m",   # 1h checks 15m
-    "2h":  "1h",    # 2h checks 1h
-    "4h":  "1d",
+# ── Adjacent timeframe map ────────────────────────────────────────────────────
+_ADJACENT_TFS: dict[str, list[str]] = {
+    "1m":  ["2m", "3m"],
+    "2m":  ["1m", "3m"],
+    "3m":  ["2m", "5m"],
+    "5m":  ["3m", "15m"],
+    "15m": ["5m", "1h"],
+    "1h":  ["15m", "4h"],
+    "2h":  ["1h", "4h"],
+    "4h":  ["1h", "2h"],
 }
 
+# ── Minutes per candle ────────────────────────────────────────────────────────
+_TF_MINUTES: dict[str, int] = {
+    "1m":  1,
+    "2m":  2,
+    "3m":  3,
+    "5m":  5,
+    "15m": 15,
+    "30m": 30,
+    "1h":  60,
+    "2h":  120,
+    "4h":  240,
+    "1d":  1440,
+}
 
-def get_higher_timeframe(base_tf: str) -> Optional[str]:
-    """Return the confirmation timeframe for *base_tf*, or None if at the top."""
-    return _HIGHER_TF.get(base_tf)
+_WINDOW_CANDLES = 25
 
 
-# ── Alligator direction on a DataFrame ───────────────────────────────────────
+# ── Signal memory store ───────────────────────────────────────────────────────
 
-def _alligator_direction(df: pd.DataFrame) -> str:
-    """Return 'UP', 'DOWN', or 'NEUTRAL' from the last bar's alligator state.
+class SignalMemory:
+    """Thread-safe store for pending cross-TF signals.
 
-    Expects columns: 'jaw', 'teeth', 'lips'  OR  'alligator_jaw' etc.
-    Falls back to SMMA computation if columns are missing.
+    Keyed by (symbol, timeframe, direction) -> datetime of the signal.
     """
-    for jaw_col, teeth_col, lips_col in [
-        ("jaw", "teeth", "lips"),
-        ("alligator_jaw", "alligator_teeth", "alligator_lips"),
-        ("smma13", "smma8", "smma5"),
-    ]:
-        if all(c in df.columns for c in (jaw_col, teeth_col, lips_col)):
-            jaw   = float(df[jaw_col].iloc[-1])
-            teeth = float(df[teeth_col].iloc[-1])
-            lips  = float(df[lips_col].iloc[-1])
-            if lips > teeth > jaw:
-                return "UP"
-            if lips < teeth < jaw:
-                return "DOWN"
-            return "NEUTRAL"
 
-    # Compute SMMA from close if no alligator columns present
-    close_col = "ha_close" if "ha_close" in df.columns else "close"
-    if close_col not in df.columns or len(df) < 13:
-        return "NEUTRAL"
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        # (symbol, timeframe, direction) -> datetime (UTC)
+        self._store: dict[tuple[str, str, str], datetime] = {}
 
-    close = df[close_col]
+    def record(self, symbol: str, timeframe: str, direction: str, timestamp: datetime) -> None:
+        """Store or refresh a signal entry."""
+        key = (symbol, timeframe, direction)
+        with self._lock:
+            self._store[key] = timestamp
 
-    def smma(series: pd.Series, period: int) -> float:
-        result = series.ewm(alpha=1.0 / period, adjust=False).mean()
-        return float(result.iloc[-1])
+    def is_confirmed(
+        self,
+        symbol: str,
+        timeframe: str,
+        direction: str,
+        timestamp: datetime,
+    ) -> bool:
+        """Return True if any adjacent TF fired the same direction within 25 candles.
 
-    jaw   = smma(close, 13)
-    teeth = smma(close, 8)
-    lips  = smma(close, 5)
+        The window size is 25 candles measured in the BASE timeframe's minutes,
+        converted to seconds.
+        """
+        tf_mins = _TF_MINUTES.get(timeframe, 1)
+        window_seconds = _WINDOW_CANDLES * tf_mins * 60
 
-    if lips > teeth > jaw:
-        return "UP"
-    if lips < teeth < jaw:
-        return "DOWN"
-    return "NEUTRAL"
+        adjacent = _ADJACENT_TFS.get(timeframe, [])
+        with self._lock:
+            for adj_tf in adjacent:
+                key = (symbol, adj_tf, direction)
+                adj_ts = self._store.get(key)
+                if adj_ts is None:
+                    continue
+                age_seconds = abs((timestamp - adj_ts).total_seconds())
+                if age_seconds <= window_seconds:
+                    log.debug(
+                        "MTF confirmed: %s %s %s — adjacent %s fired %.0fs ago (window %ds)",
+                        symbol, timeframe, direction, adj_tf, age_seconds, window_seconds,
+                    )
+                    return True
+        return False
+
+    def cleanup(self) -> None:
+        """Remove entries older than 25 candles on their own timeframe."""
+        now = datetime.now(tz=timezone.utc)
+        expired_keys = []
+        with self._lock:
+            for (symbol, timeframe, direction), ts in self._store.items():
+                tf_mins = _TF_MINUTES.get(timeframe, 1)
+                window_seconds = _WINDOW_CANDLES * tf_mins * 60
+                # Ensure ts is timezone-aware for comparison
+                if ts.tzinfo is None:
+                    ts_aware = ts.replace(tzinfo=timezone.utc)
+                else:
+                    ts_aware = ts
+                age = (now - ts_aware).total_seconds()
+                if age > window_seconds:
+                    expired_keys.append((symbol, timeframe, direction))
+            for key in expired_keys:
+                del self._store[key]
+        if expired_keys:
+            log.debug("MTF cleanup: removed %d expired entries", len(expired_keys))
+
+
+# ── Module-level singleton ────────────────────────────────────────────────────
+signal_memory = SignalMemory()
 
 
 # ── Main public function ──────────────────────────────────────────────────────
 
-def check_mtf_alignment(
-    symbol:    str,
-    base_tf:   str,
-    direction: str,          # "buy" or "sell"
-    bars:      int = 100,
+def check_cross_tf_confirmation(
+    symbol: str,
+    timeframe: str,
+    direction: str,
+    timestamp: Optional[datetime] = None,
 ) -> str:
-    """Return MTF alignment status for a pending signal.
+    """Record a signal and check for cross-TF confirmation.
 
     Parameters
     ----------
     symbol:    Asset symbol (e.g. "BTCUSD", "AAPL").
-    base_tf:   The signal's timeframe (e.g. "5m").
+    timeframe: The signal's timeframe (e.g. "5m").
     direction: "buy" or "sell".
-    bars:      How many bars to fetch on the confirmation timeframe.
+    timestamp: When the signal fired. Defaults to utcnow().
 
-    Returns one of: "ALIGNED", "COUNTER", "NEUTRAL", "UNAVAILABLE".
+    Returns
+    -------
+    "CONFIRMED"  — an adjacent TF fired the same direction within 25 candles.
+    "PENDING"    — stored; waiting for an adjacent TF to confirm.
+    "EXPIRED"    — (reserved; cleanup handles expiry, not this call path).
     """
-    htf = get_higher_timeframe(base_tf)
-    if htf is None:
-        return "NEUTRAL"   # Already at highest timeframe
+    if timestamp is None:
+        timestamp = datetime.now(tz=timezone.utc)
 
-    try:
-        from src.data.market_data import get_latest_candles
-        htf_df = get_latest_candles(symbol, htf, count=bars)
-        if htf_df is None or htf_df.empty:
-            log.debug("MTF: no %s data for %s — skipping filter", htf, symbol)
-            return "UNAVAILABLE"
+    # Normalise direction so "BUY"/"SELL" and "buy"/"sell" both work
+    direction = direction.lower()
 
-        trend = _alligator_direction(htf_df)
-        dir_up = direction.lower() in ("buy", "long")
+    confirmed = signal_memory.is_confirmed(symbol, timeframe, direction, timestamp)
+    signal_memory.record(symbol, timeframe, direction, timestamp)
 
-        if trend == "NEUTRAL":
-            return "NEUTRAL"
-        if (trend == "UP" and dir_up) or (trend == "DOWN" and not dir_up):
-            return "ALIGNED"
-        return "COUNTER"
-
-    except Exception as exc:
-        log.debug("MTF check failed for %s %s: %s", symbol, base_tf, exc)
-        return "UNAVAILABLE"
+    if confirmed:
+        return "CONFIRMED"
+    return "PENDING"

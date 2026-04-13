@@ -59,8 +59,8 @@ class AssetEntry:
 # Tier 1 — Core crypto momentum universe (24/7 hunting ground)
 # DOGE is treated as core momentum (not meme lane) due to its liquidity.
 _CORE_CRYPTO_SYMBOLS: list[str] = [
-    "BTC/USD", "ETH/USD", "SOL/USD", "AVAX/USD", "LINK/USD",
-    "DOGE/USD", "BNB/USD", "INJ/USD", "ARB/USD", "APT/USD",
+    "BTCUSD", "ETHUSD", "SOLUSD", "AVAXUSD", "LINKUSD",
+    "DOGEUSD", "BNBUSD", "INJUSD", "ARBUSD", "APTUSD",
 ]
 
 # Tier 2 — Core US momentum stocks (clean directional expansion)
@@ -80,8 +80,8 @@ _HIGH_BETA_ETFS: list[str] = [
 
 # Meme coin lane — stricter ATR + volume + liquidity gates (not part of Core 20)
 _MEME_COIN_LANE: list[str] = [
-    "SHIB/USD", "PEPE/USD", "FLOKI/USD", "WIF/USD",
-    "BONK/USD", "MEME/USD", "TURBO/USD",
+    "SHIBUSD", "PEPEUSD", "FLOKIUSD", "WIFUSD",
+    "BONKUSD", "MEMEUSD", "TURBOUSD",
 ]
 
 

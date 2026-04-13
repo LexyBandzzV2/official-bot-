@@ -553,15 +553,25 @@ def cmd_start(timeframe, ticker, category, dry_run, live, broker, top, balance):
     from src.scanner.market_scanner import MarketScanner
     from src.data.symbol_mapper import get_symbols_by_class
     from src.scanner.asset_universe import get_enabled_symbols, get_entry
-    from src.config             import ACCOUNT_BALANCE
+    from src.config             import ACCOUNT_BALANCE, TRADING_MODE
 
     init_db()
 
-    actual_dry_run = not live  # live flag overrides dry-run default
-    selected_broker = None if str(broker).lower() == "auto" else str(broker).lower()
+    # dry_run=False whenever TRADING_MODE is "paper" or "live" (both make real API calls).
+    # The --live flag is an explicit override that also disables dry_run.
+    # Only stay in dry_run if TRADING_MODE is something else (e.g. unset/custom).
     if live:
+        actual_dry_run = False
+    elif TRADING_MODE in ("paper", "live"):
+        actual_dry_run = False
+    else:
+        actual_dry_run = True  # explicit --dry-run or unknown mode
+
+    selected_broker = None if str(broker).lower() == "auto" else str(broker).lower()
+    if not actual_dry_run:
+        mode_label = TRADING_MODE.upper() if not live else "LIVE"
         console.print(Panel(
-            "[bold red]WARNING: ORDER ROUTING ENABLED -- The scanner will submit orders per TRADING_MODE and BrokerRouter[/]\n"
+            f"[bold red]ORDER ROUTING ENABLED (mode={mode_label}) — scanner will submit orders via BrokerRouter[/]\n"
             "(Alpaca paper/live, IBKR, Kraken, or MT5). Press Ctrl+C to stop cleanly.",
             border_style="red",
         ))

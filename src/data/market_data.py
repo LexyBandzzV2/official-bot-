@@ -61,7 +61,7 @@ except ImportError:
 try:
     from src.data.ibkr.client import IBKRMarketDataClient
     _IBKR_AVAILABLE = True
-except ImportError:
+except Exception:   # catches ImportError AND RuntimeError (ib_insync/eventkit Python 3.14 compat)
     _IBKR_AVAILABLE = False
     IBKRMarketDataClient = None
 
@@ -868,6 +868,25 @@ def get_latest_candles(
 
     # Fallback to historical fetch
     df = get_historical_ohlcv(symbol, timeframe, start=start, source=source)
+
+    # Aggressive yfinance fallback for non-crypto assets: if primary source returned
+    # nothing and we haven't already tried yfinance explicitly, try it now.
+    if df.empty and not is_crypto and source not in ("yfinance", "fallback"):
+        log.debug(
+            "get_latest_candles: %s returned empty from source=%s — retrying with yfinance",
+            symbol, source,
+        )
+        try:
+            resolved_yf = _resolve_symbol(symbol, "yfinance")
+            df = _fetch_yfinance(resolved_yf, timeframe, start, datetime.now(timezone.utc))
+            if not df.empty:
+                log.info(
+                    "get_latest_candles: yfinance fallback succeeded for %s (primary source=%s failed)",
+                    symbol, source,
+                )
+        except Exception as _yf_err:
+            log.debug("get_latest_candles: yfinance fallback also failed for %s: %s", symbol, _yf_err)
+
     if df.empty:
         return df
     return df.tail(count).reset_index(drop=True)
