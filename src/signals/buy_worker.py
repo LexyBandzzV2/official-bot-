@@ -67,7 +67,7 @@ class BuySignalWorker:
         # ── 3-point confluence (rolling window) ───────────────────────────────
         ab = analyze_buy(df)
         completions = ab["completions"]
-        window = 10  # match POINT_COMPLETION_WINDOW
+        window = 15  # match POINT_COMPLETION_WINDOW
         # Signal valid if all 3 points met within last 10 candles
         is_valid = ab["valid_last"]
         

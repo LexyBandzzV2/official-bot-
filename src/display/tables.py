@@ -504,6 +504,21 @@ def print_ai_unavailable(signal_type: str, asset: str, score: float = 0.4) -> No
     )
 
 
+# ── OWL STALK ASCII banner ────────────────────────────────────────────────────
+
+_OWL_STALK_BANNER = """\
+[bold bright_cyan] ██████  ██     ██ ██          ███████ ████████  █████  ██      ██   ██ [/bold bright_cyan]
+[bold bright_cyan] ██    ██ ██     ██ ██          ██         ██    ██   ██ ██      ██  ██  [/bold bright_cyan]
+[bold bright_cyan] ██    ██ ██  █  ██ ██          ███████    ██    ███████ ██      █████   [/bold bright_cyan]
+[bold bright_cyan] ██    ██ ██ ███ ██ ██               ██    ██    ██   ██ ██      ██  ██  [/bold bright_cyan]
+[bold bright_cyan]  ██████   ███ ███  ███████     ███████    ██    ██   ██ ███████ ██   ██ [/bold bright_cyan]"""
+
+
+def print_owl_banner() -> None:
+    """Print the OWL STALK ASCII title in light blue."""
+    console.print(_OWL_STALK_BANNER)
+
+
 # ── Scan status table ────────────────────────────────────────────────────────
 
 def print_scan_status_table(scan_results: list[dict]) -> None:

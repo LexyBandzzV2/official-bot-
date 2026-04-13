@@ -63,7 +63,7 @@ try:
     from src.scanner.asset_universe import filter_to_universe, get_entry as _universe_get_entry
     from src.display.tables        import (
         print_buy_signal, print_sell_signal, print_trade_closed, print_kill_switch,
-        print_active_signals, print_trail_update, print_scan_status_table,
+        print_active_signals, print_trail_update, print_scan_status_table, print_owl_banner,
     )
     from src.notifications.logger  import (
         log_signal, log_trade_open, log_trade_close, log_rejection, log_kill_switch,
@@ -369,9 +369,10 @@ class MarketScanner:
             except Exception as e:
                 log.error("Signal eval failed for %s: %s", sym, e)
 
-        # Print compact status table for every scanned asset this cycle
+        # Print OWL STALK banner + compact status table for every scanned asset this cycle
         try:
             if self._scan_status:
+                print_owl_banner()
                 print_scan_status_table(self._scan_status)
         except Exception as _tbl_err:
             log.debug("print_scan_status_table failed: %s", _tbl_err)

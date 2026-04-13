@@ -20,14 +20,15 @@ log = logging.getLogger(__name__)
 
 # ── Adjacent timeframe map ────────────────────────────────────────────────────
 _ADJACENT_TFS: dict[str, list[str]] = {
-    "1m":  ["2m", "3m"],
-    "2m":  ["1m", "3m"],
-    "3m":  ["2m", "5m"],
-    "5m":  ["3m", "15m"],
-    "15m": ["5m", "1h"],
-    "1h":  ["15m", "4h"],
-    "2h":  ["1h", "4h"],
-    "4h":  ["1h", "2h"],
+    "1m":  ["2m", "3m"],    # 1m confirmed by 2m or 3m
+    "2m":  ["1m", "3m"],    # 2m confirmed by 1m or 3m
+    "3m":  ["2m", "5m"],    # 3m confirmed by 2m or 5m
+    "5m":  ["3m", "15m"],   # 5m confirmed by 3m or 15m
+    "15m": ["5m", "30m"],   # 15m confirmed by 5m or 30m
+    "30m": ["15m", "1h"],   # 30m confirmed by 15m or 1h
+    "1h":  ["30m", "2h"],   # 1h confirmed by 30m or 2h
+    "2h":  ["1h", "4h"],    # 2h confirmed by 1h or 4h (no 3h in standard data)
+    "4h":  ["2h", "1d"],    # 4h confirmed by 2h or 1d
 }
 
 # ── Minutes per candle ────────────────────────────────────────────────────────

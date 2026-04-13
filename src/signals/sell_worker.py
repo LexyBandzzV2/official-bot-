@@ -63,7 +63,7 @@ class SellSignalWorker:
         # ── 3-point confluence (rolling window) ───────────────────────────────
         sl = analyze_sell(df)
         completions = sl["completions"]
-        window = 10  # match POINT_COMPLETION_WINDOW
+        window = 15  # match POINT_COMPLETION_WINDOW
         # Signal valid if all 3 points met within last 10 candles
         is_valid = sl["valid_last"]
         

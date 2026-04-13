@@ -18,7 +18,7 @@ from src.indicators.stochastic import stochastic_buy_event, stochastic_sell_even
 from src.indicators.vortex     import vortex_buy_event, vortex_sell_event
 
 # Bars allowed after the first point (inclusive range [first_idx, first_idx + window])
-POINT_COMPLETION_WINDOW = 9
+POINT_COMPLETION_WINDOW = 15
 
 
 def _bits_at(
