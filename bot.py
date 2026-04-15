@@ -532,6 +532,9 @@ def cmd_status(risk):
 
 @cli.command("start")
 @click.option("--timeframe",  "-tf",  default="1h",  show_default=True)
+@click.option("--all-timeframes", "-atf", is_flag=True, default=False,
+              help="Run ALL active timeframes simultaneously in parallel threads. "
+                   "Overrides --timeframe. Timeframes: 1m,2m,3m,5m,15m,30m,1h,2h,3h,4h")
 @click.option("--ticker",     "-t",   default=None,  help="Single ticker (omit for full catalogue)")
 @click.option("--category",   "-c",   default=None,
               type=click.Choice(["forex","crypto","stocks","commodities","indices"], case_sensitive=False))
@@ -542,7 +545,7 @@ def cmd_status(risk):
               help="Force execution through one broker. Use alpaca for Alpaca paper/live accounts.")
 @click.option("--top",               default=10,    show_default=True)
 @click.option("--balance",    "-b",  default=None,  type=float, help="Override account balance")
-def cmd_start(timeframe, ticker, category, dry_run, live, broker, top, balance):
+def cmd_start(timeframe, all_timeframes, ticker, category, dry_run, live, broker, top, balance):
     """Start the continuous market scanner.
 
     Default is DRY RUN (signals only).  Use --live for real order submission.
@@ -624,16 +627,64 @@ def cmd_start(timeframe, ticker, category, dry_run, live, broker, top, balance):
     else:
         symbols = get_enabled_symbols()
 
-    scanner = MarketScanner(
-        symbols          = symbols,
-        timeframe        = timeframe,
-        top_candidates   = top,
-        dry_run          = actual_dry_run,
-        account_balance  = balance or ACCOUNT_BALANCE,
-        execution_broker = selected_broker,
-    )
+    if all_timeframes:
+        # ── Multi-timeframe mode: spawn one thread per TF, all scan all day ──
+        import threading
+        _ALL_TF = ["1m", "2m", "3m", "5m", "15m", "30m", "1h", "2h", "3h", "4h"]
+        console.print(Panel(
+            f"[bold cyan]ALL-TIMEFRAMES MODE — {len(_ALL_TF)} scanners starting in parallel[/]\n"
+            + "  ".join(_ALL_TF) + "\n"
+            "SQLite cross-TF duplicate guard is active. Press Ctrl+C to stop all.",
+            border_style="cyan",
+        ))
 
-    scanner.start()
+        threads: list[threading.Thread] = []
+        scanners: list = []
+
+        for tf in _ALL_TF:
+            sc = MarketScanner(
+                symbols          = symbols,
+                timeframe        = tf,
+                top_candidates   = top,
+                dry_run          = actual_dry_run,
+                account_balance  = balance or ACCOUNT_BALANCE,
+                execution_broker = selected_broker,
+            )
+            scanners.append(sc)
+            t = threading.Thread(
+                target=sc.start,
+                name=f"scanner-{tf}",
+                daemon=True,
+            )
+            threads.append(t)
+
+        for t in threads:
+            t.start()
+
+        console.print(f"[green]All {len(threads)} timeframe scanners started.[/]")
+
+        try:
+            # Main thread just keeps alive until Ctrl+C
+            import time as _time
+            while True:
+                _time.sleep(1)
+        except KeyboardInterrupt:
+            console.print("[yellow]Ctrl+C — stopping all timeframe scanners...[/]")
+            for sc in scanners:
+                sc.stop()
+            for t in threads:
+                t.join(timeout=10)
+            console.print("[green]All scanners stopped.[/]")
+    else:
+        scanner = MarketScanner(
+            symbols          = symbols,
+            timeframe        = timeframe,
+            top_candidates   = top,
+            dry_run          = actual_dry_run,
+            account_balance  = balance or ACCOUNT_BALANCE,
+            execution_broker = selected_broker,
+        )
+        scanner.start()
 
 
 @cli.command("stop")

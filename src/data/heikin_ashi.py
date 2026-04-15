@@ -65,7 +65,11 @@ def convert_to_heikin_ashi(df: pd.DataFrame) -> pd.DataFrame:
     ha_range = ha_high - ha_low
 
     # Doji: body is less than 10 % of range.  Zero-range candle = doji by default.
-    is_doji    = np.where(ha_range > 0, ha_body / ha_range < 0.10, True)
+    # Suppress spurious RuntimeWarning when ha_range contains NaN (already handled by np.where).
+    import warnings
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", category=RuntimeWarning)
+        is_doji    = np.where(ha_range > 0, ha_body / ha_range < 0.10, True)
     is_bullish = ha_close > ha_open
     is_bearish = ha_close < ha_open
 

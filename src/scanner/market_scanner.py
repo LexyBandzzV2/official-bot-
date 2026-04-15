@@ -536,6 +536,7 @@ class MarketScanner:
             if not approved:
                 self._reject_signal(sig, ha_df, reason)
                 continue
+            _is_pyramid = reason == "APPROVED_PYRAMID"
 
             # Cross-TF confirmation — signal fires when two adjacent TFs agree within 25 candles
             try:
@@ -600,8 +601,12 @@ class MarketScanner:
             trade_sent = False
             execution_rejection = None
             if not self.dry_run:
-                execution_rejection = self._open_position(sig, ha_df)
+                execution_rejection = self._open_position(sig, ha_df, is_pyramid=_is_pyramid)
                 trade_sent = execution_rejection is None
+                if trade_sent and _is_pyramid:
+                    self.risk_manager.record_pyramid(sig.asset)
+                    log.info("Pyramid add recorded for %s (count=%d)", sig.asset,
+                             self.risk_manager._pyramid_counts.get(sig.asset, 0))
 
             if execution_rejection is not None:
                 sig.accepted_signal = False
@@ -616,15 +621,23 @@ class MarketScanner:
                 sig, ha_df, trade_sent_to_ibkr=trade_sent, rejection_reason=None
             )
 
-    def _open_position(self, sig: BuySignalResult | SellSignalResult, ha_df: pd.DataFrame) -> Optional[str]:
+    def _open_position(self, sig: BuySignalResult | SellSignalResult, ha_df: pd.DataFrame, is_pyramid: bool = False) -> Optional[str]:
         import uuid
         import numpy as np
         from src.signals.types import TradeRecord
         entry  = sig.entry_price
-        sl     = sig.stop_loss
+        # Use the 2% hard floor for position sizing and stop order placement.
+        # sig.stop_loss now also outputs 2%, but we anchor to STOP_LOSS_PCT
+        # explicitly so a stale signal value can never override the intended floor.
+        sl = (entry * (1.0 - STOP_LOSS_PCT) if sig.signal_type == "BUY"
+              else entry * (1.0 + STOP_LOSS_PCT))
+        sl = round(sl, 8)
         size   = calculate_position_size(
             self.risk_manager.account_balance, entry, sl, MAX_RISK_PER_TRADE
         )
+        if is_pyramid:
+            size = round(size * self.risk_manager.pyramid_size_factor(sig.asset), 6)
+            log.info("Pyramid add for %s: position size scaled to %.6f (50%%)", sig.asset, size)
         if size <= 0:
             log.debug(
                 "_open_position: calculated size is 0 for %s — skipping",
@@ -649,6 +662,21 @@ class MarketScanner:
                 getattr(sig, "asset", "?"),
             )
             return "regime_size_factor_zeroed"
+
+        # Equities: Alpaca rejects stop / stop_limit / trailing_stop orders on
+        # fractional shares, so any fractional equity position ends up with no
+        # broker-side stop protection. Floor to whole shares here so the DB
+        # record, entry order, and stop order all agree.
+        _ac_for_size = (get_asset_class(sig.asset) or "").lower()
+        if _ac_for_size != "crypto":
+            _whole = int(size)
+            if _whole < 1:
+                log.info(
+                    "_open_position: equity %s sized below 1 whole share (%.4f) — skipping",
+                    sig.asset, size,
+                )
+                return "equity_fractional_skipped"
+            size = float(_whole)
 
         ag_df = calculate_alligator(ha_df)
         last  = ag_df.iloc[-1]
@@ -731,7 +759,7 @@ class MarketScanner:
             timeframe       = sig.timeframe,
             entry_time      = datetime.now(_tz),
             entry_price     = entry,
-            stop_loss_hard  = sl,
+            stop_loss_hard  = trail.hard_floor,   # always the 2 % floor from TrailingStop
             trailing_stop   = trail.current_stop,
             position_size   = size,
             account_risk_pct= MAX_RISK_PER_TRADE,
@@ -788,6 +816,57 @@ class MarketScanner:
             log.warning("_open_position: broker unavailable for %s %s", sig.signal_type, sig.asset)
             return "broker_unavailable"
 
+        # ── Calculate take profit (2.5 × ATR from entry, ≥ 1% minimum) ─────────
+        # For ultra-low-price assets (BONK, PEPE, SHIB), ATR is so tiny that
+        # round(entry + 2.5×ATR, 8) collapses to entry price. We enforce a
+        # 1% minimum TP distance so the order is always meaningful.
+        _take_profit: Optional[float] = None
+        _atr_val: float = 0.0
+        try:
+            from src.indicators.utils import latest_atr
+            _atr_val = latest_atr(ha_df, period=14)
+            _min_tp_move = entry * 0.01   # 1 % minimum distance
+
+            if sig.signal_type == "BUY":
+                _atr_move = max(2.5 * _atr_val, _min_tp_move) if _atr_val > 0 else _min_tp_move
+                _raw_tp   = entry + _atr_move
+            else:
+                _atr_move = max(2.5 * _atr_val, _min_tp_move) if _atr_val > 0 else _min_tp_move
+                _raw_tp   = entry - _atr_move
+
+            # Use enough decimal places for penny crypto (14 sig-figs).
+            _sig_figs = max(8, -int(f"{entry:.2e}".split("e")[1]) + 6)
+            _take_profit = round(_raw_tp, _sig_figs)
+
+            # Final sanity: reject TP if it's still at or past entry (shouldn't happen)
+            if sig.signal_type == "BUY" and _take_profit <= entry:
+                _take_profit = None
+            elif sig.signal_type == "SELL" and _take_profit >= entry:
+                _take_profit = None
+
+            if _take_profit is not None:
+                log.info(
+                    "_open_position: TP=%.10f (ATR=%.10f, min_move=%.10f) for %s %s",
+                    _take_profit, _atr_val, _min_tp_move, sig.signal_type, sig.asset,
+                )
+        except Exception as _tp_err:
+            log.debug("ATR-based TP calc failed: %s", _tp_err)
+
+        # ── Momentum-driven trailing take profit ───────────────────────────────
+        # TP only extends when a high-momentum candle fires in our favour.
+        from src.risk.trailing_stop import TrailingTakeProfit
+        trail_tp: Optional[TrailingTakeProfit] = None
+        if _take_profit is not None:
+            trail_tp = TrailingTakeProfit(
+                direction           = "buy" if sig.signal_type == "BUY" else "sell",
+                entry_price         = entry,
+                initial_tp          = _take_profit,
+                momentum_multiplier = 1.0,
+                tp_extension_atr    = 2.5,
+            )
+        rec._trail_tp = trail_tp  # type: ignore[attr-defined]
+        rec._atr_at_entry = _atr_val  # type: ignore[attr-defined]
+
         try:
             placed = self._broker.place_order(
                 signal_type=sig.signal_type,
@@ -796,7 +875,7 @@ class MarketScanner:
                 volume=size,
                 expected_entry=entry,
                 stop_loss=trail.current_stop,
-                take_profit=None,
+                take_profit=_take_profit,
                 trade_id=rec.trade_id,
             )
         except Exception as e:
@@ -852,7 +931,7 @@ class MarketScanner:
 
             # Update trailing stop (tracks teeth - red line)
             old_stop = trail.current_stop
-            new_stop = trail.update(teeth_now)
+            new_stop = trail.update(teeth_now, current_price=close_price)
 
             # Sync max_trail_reached with the trail object on every bar
             rec.max_trail_reached = trail.max_trail
@@ -861,24 +940,57 @@ class MarketScanner:
             if alligator_tp:
                 alligator_tp.update(lips_now)
 
-            # Update broker orders if stop changed (TP is managed internally for safety)
-            if abs(new_stop - old_stop) > 1e-10:
-                rec.trailing_stop = new_stop
-                rec.trail_update_reason = "candle_trail"
-                
-                print_trail_update(rec.asset, old_stop, new_stop, rec.signal_type)
-                log_trail_update_full(tid, rec.asset, old_stop, new_stop, "candle_trail", close_price)
-                save_lifecycle_event(
-                    tid, "trail_update",
-                    trail_update_reason="candle_trail",
-                    old_value=old_stop, new_value=new_stop,
-                    current_price=close_price,
-                )
-                
+            # ── Momentum-driven trailing take profit update ─────────────────
+            trail_tp = getattr(rec, "_trail_tp", None)
+            new_tp: Optional[float] = None
+            old_tp: Optional[float] = None
+            if trail_tp is not None:
+                old_tp = trail_tp.current_tp
+                # Extract last candle momentum
+                try:
+                    _last_open  = float(last.get("ha_open",  last.get("open",  close_price)))
+                    _last_close = float(last.get("ha_close", last.get("close", close_price)))
+                    _body       = abs(_last_close - _last_open)
+                    _dir        = 1 if _last_close > _last_open else (-1 if _last_close < _last_open else 0)
+                    _atr_cur    = getattr(rec, "_atr_at_entry", 0.0)
+                    try:
+                        from src.indicators.utils import latest_atr
+                        _atr_live = latest_atr(ha_df, period=14)
+                        if _atr_live > 0:
+                            _atr_cur = _atr_live
+                    except Exception:
+                        pass
+                    new_tp = trail_tp.update(
+                        current_price=close_price,
+                        candle_body=_body,
+                        candle_dir=_dir,
+                        atr=_atr_cur,
+                    )
+                except Exception as _tp_err:
+                    log.debug("trail_tp.update: %s", _tp_err)
+
+            # Update broker orders if stop or TP changed
+            _stop_changed = abs(new_stop - old_stop) > 1e-10
+            _tp_changed   = new_tp is not None and old_tp is not None and abs(new_tp - old_tp) > 1e-10
+
+            if _stop_changed or _tp_changed:
+                if _stop_changed:
+                    rec.trailing_stop = new_stop
+                    rec.trail_update_reason = "profit_lock_50pct"
+                    print_trail_update(rec.asset, old_stop, new_stop, rec.signal_type)
+                    log_trail_update_full(tid, rec.asset, old_stop, new_stop, "profit_lock_50pct", close_price)
+                    save_lifecycle_event(
+                        tid, "trail_update",
+                        trail_update_reason="profit_lock_50pct",
+                        old_value=old_stop, new_value=new_stop,
+                        current_price=close_price,
+                    )
+
                 if self._broker:
                     try:
                         self._broker.modify_position_sltp(
-                            rec.asset, tid, new_stop, None,
+                            rec.asset, tid, new_stop,
+                            new_tp if _tp_changed else None,
                         )
                     except Exception as e:
                         log.debug("Broker SL/TP update: %s", e)
@@ -1201,17 +1313,29 @@ class MarketScanner:
             if not should_close:
                 continue
 
+            actual_exit_price = close_price  # default: HA bar close
             if self._broker:
                 try:
                     self._broker.close_order(rec.asset, tid)
+                    # Fetch actual broker fill price for accurate P&L reporting
+                    _fill = getattr(self._broker, "get_last_fill_price", None)
+                    if callable(_fill):
+                        _actual = _fill(tid)
+                        if _actual and _actual > 0:
+                            actual_exit_price = _actual
+                            log.debug(
+                                "P&L using actual fill price %.6f (HA close was %.6f) for %s",
+                                actual_exit_price, close_price, rec.asset,
+                            )
                 except Exception as e:
                     log.warning("Broker close_order: %s", e)
 
             if rec.signal_type == "BUY":
-                pnl_pct = (close_price - rec.entry_price) / rec.entry_price * 100
+                pnl_pct = (actual_exit_price - rec.entry_price) / rec.entry_price * 100
             else:
-                pnl_pct = (rec.entry_price - close_price) / rec.entry_price * 100
+                pnl_pct = (rec.entry_price - actual_exit_price) / rec.entry_price * 100
             pnl = pnl_pct / 100 * rec.position_size * rec.entry_price
+            close_price = actual_exit_price  # use actual price for all subsequent fields
 
             rec.exit_time    = datetime.now(_tz)
             rec.exit_price   = close_price
@@ -1291,8 +1415,10 @@ class MarketScanner:
             log.info("Stop signal received, shutting down scanner...")
             _stop_event.set()
 
-        _signal.signal(_signal.SIGINT,  _handle_stop)
-        _signal.signal(_signal.SIGTERM, _handle_stop)
+        import threading as _threading
+        if _threading.current_thread() is _threading.main_thread():
+            _signal.signal(_signal.SIGINT,  _handle_stop)
+            _signal.signal(_signal.SIGTERM, _handle_stop)
 
         while not _stop_event.is_set():
             try:

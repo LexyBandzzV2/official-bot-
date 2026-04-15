@@ -13,13 +13,20 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Literal
 
 from src.signals.types import BuySignalResult, SellSignalResult, TradeRecord
 from src.risk.position_sizer import calculate_position_size
 from src.risk.trailing_stop import TrailingStop
 
 logger = logging.getLogger(__name__)
+
+# Timeframes ≤ 30 minutes are "small" — they get priority over large-TF trades.
+_SMALL_TIMEFRAMES = {"1m", "2m", "3m", "5m", "15m", "30m"}
+
+
+def _is_small_tf(tf: str) -> bool:
+    return (tf or "").lower() in _SMALL_TIMEFRAMES
 
 
 class RiskManager:
@@ -52,6 +59,25 @@ class RiskManager:
         self._hour_window_start:  datetime             = _current_hour()
 
         self.open_positions:      Dict[str, TradeRecord] = {}   # trade_id → record
+
+        # ── Pyramid state ─────────────────────────────────────────────────────
+        # Tracks how many pyramid adds have been made per asset (asset → count).
+        # Conservative: first add at +1 % profit, second at +2 %, max 2 total.
+        self._pyramid_counts:     Dict[str, int]       = {}
+        self.max_pyramids:        int                  = 2
+        self.pyramid_profit_thresholds: List[float]   = [1.0, 2.0]  # % unrealised
+
+        # ── Cross-TF confirmation cap ─────────────────────────────────────────
+        # Maximum number of simultaneous same-direction positions across
+        # different timeframes for the same asset.
+        self.max_cross_tf_confirmations: int = 4
+
+        # ── Re-entry cooldown ─────────────────────────────────────────────────
+        # After a position closes on an asset+direction, block new entries
+        # for this many seconds to prevent scan-cycle retriggers.
+        # "{asset}:{BUY|SELL}" → datetime of last close.
+        self._recent_closes: Dict[str, datetime] = {}
+        self.reentry_cooldown_s: float = 300.0   # 5 minutes
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -86,13 +112,139 @@ class RiskManager:
                 f"({self._hourly_count}/{self.max_trades_per_hour} trades this hour)"
             )
 
-        # 3. Duplicate position on same asset
+        # 3. Duplicate position on same asset (this scanner / same TF).
+        #    Small TF (≤30m): opposing direction allowed — each trade is
+        #    independent and managed by its own stop/TP.
+        #    Large TF (>30m): opposing direction → REJECT.
+        #    Same direction → pyramid check.
         asset = signal.asset
+        has_same_tf_conflict = False
         for rec in self.open_positions.values():
-            if rec.asset == asset:
-                return False, f"DUPLICATE_POSITION ({asset} already open)"
+            if rec.asset != asset:
+                continue
+            if signal.signal_type != rec.signal_type:
+                if _is_small_tf(signal.timeframe):
+                    continue   # small TF: allow opposing, skip this record
+                return False, (
+                    f"DIRECTION_CONFLICT ({asset}: existing={rec.signal_type} "
+                    f"new={signal.signal_type} — large TF blocked)"
+                )
+            # Same direction — check pyramid
+            pyramid_reason = self._check_pyramid(signal, rec)
+            if pyramid_reason is not None:
+                return pyramid_reason
+            has_same_tf_conflict = True
+
+        if has_same_tf_conflict:
+            return False, f"DUPLICATE_POSITION ({asset} already open)"
+
+        # 3.5 Post-close cooldown: block re-entries on same asset+direction
+        #     within cooldown window (prevents scan-cycle retriggers).
+        cooldown_key = f"{asset}:{signal.signal_type}"
+        last_close = self._recent_closes.get(cooldown_key)
+        if last_close is not None:
+            elapsed = (datetime.now() - last_close).total_seconds()
+            if elapsed < self.reentry_cooldown_s:
+                remaining = int(self.reentry_cooldown_s - elapsed)
+                return False, f"REENTRY_COOLDOWN ({asset} {signal.signal_type}: {remaining}s left)"
+
+        # 4. Cross-timeframe guard (SQLite — OTHER scanner instances).
+        #
+        #    Small TF (≤30m) = ≤30 min candles.  Large TF = 1h+.
+        #
+        #    SAME direction on any other TF → ALLOW (cross-TF confirmation).
+        #    OPPOSITE direction:
+        #      new=small, existing=large → ALLOW  (small wins, runs independently)
+        #      new=small, existing=small → ALLOW  (both short-term, both allowed)
+        #      new=large, existing=small → BLOCK  (small has priority)
+        #      new=large, existing=large → BLOCK  (no opposing long-running trades)
+        try:
+            from src.data.db import get_open_trades
+            db_open = get_open_trades()
+            same_dir_count = 0
+            new_tf       = (signal.timeframe or "").lower()
+            new_is_small = _is_small_tf(new_tf)
+            for row in db_open:
+                if row.get("asset") != asset or row.get("status") != "OPEN":
+                    continue
+                db_tf = (row.get("timeframe") or "").lower()
+                if db_tf == new_tf:
+                    continue   # same TF handled in step 3
+                db_direction = row.get("signal_type", "")
+                db_is_small  = _is_small_tf(db_tf)
+
+                if db_direction == signal.signal_type:
+                    same_dir_count += 1
+                    continue
+
+                # Opposing direction — apply small-wins-large rule
+                if new_is_small:
+                    # Small TF always wins: allow regardless of existing TF size
+                    logger.info(
+                        "Cross-TF: small %s %s allowed despite opposing %s %s",
+                        new_tf, signal.signal_type, db_tf, db_direction,
+                    )
+                    continue
+                else:
+                    # New signal is large TF — block it
+                    return False, (
+                        f"CROSS_TF_DIRECTION_CONFLICT ({asset}: "
+                        f"{new_tf} {signal.signal_type} vs {db_tf} {db_direction})"
+                    )
+
+            if same_dir_count >= self.max_cross_tf_confirmations:
+                return False, (
+                    f"CROSS_TF_CONFIRMATION_CAP ({asset}: "
+                    f"{same_dir_count}/{self.max_cross_tf_confirmations} TFs already open)"
+                )
+            if same_dir_count > 0:
+                logger.info(
+                    "Cross-TF confirmation: %s %s approved (%d same-direction TFs open)",
+                    asset, signal.signal_type, same_dir_count,
+                )
+                return True, f"APPROVED_CROSS_TF_CONFIRM ({same_dir_count + 1} TFs)"
+        except Exception as _db_err:
+            logger.debug("Cross-TF SQLite check failed: %s", _db_err)
 
         return True, "APPROVED"
+
+    def _check_pyramid(
+        self,
+        signal: "BuySignalResult | SellSignalResult",
+        existing: "TradeRecord",
+    ) -> Optional[Tuple[bool, str]]:
+        """Determine whether a pyramid add is allowed on an existing position.
+
+        Returns (True, "APPROVED_PYRAMID") if allowed, (False, reason) if not,
+        or None if the caller should fall through to the standard DUPLICATE check.
+        """
+        asset = signal.asset
+
+        # Must be same direction
+        if signal.signal_type != existing.signal_type:
+            return False, f"DIRECTION_CONFLICT ({asset}: existing={existing.signal_type} new={signal.signal_type})"
+
+        # Pyramid count cap
+        current_count = self._pyramid_counts.get(asset, 0)
+        if current_count >= self.max_pyramids:
+            return False, f"PYRAMID_CAP ({asset}: {current_count}/{self.max_pyramids} adds used)"
+
+        # Existing position must be profitable enough for the next level
+        required_pct = self.pyramid_profit_thresholds[current_count]  # 1.0 % or 2.0 %
+        if existing.entry_price <= 0:
+            return None
+        if existing.signal_type == "BUY":
+            unrealised = (signal.entry_price - existing.entry_price) / existing.entry_price * 100.0
+        else:
+            unrealised = (existing.entry_price - signal.entry_price) / existing.entry_price * 100.0
+
+        if unrealised < required_pct:
+            return False, (
+                f"PYRAMID_NOT_PROFITABLE ({asset}: need +{required_pct}% profit, "
+                f"current={unrealised:.2f}%)"
+            )
+
+        return True, "APPROVED_PYRAMID"
 
     def record_opened(
         self,
@@ -150,6 +302,18 @@ class RiskManager:
         self.open_positions[trade_id] = rec
         self._hourly_count += 1
         return rec
+
+    def record_pyramid(self, asset: str) -> None:
+        """Increment the pyramid counter for an asset after a pyramid add is placed."""
+        self._pyramid_counts[asset] = self._pyramid_counts.get(asset, 0) + 1
+
+    def pyramid_size_factor(self, asset: str) -> float:
+        """Return the position-size multiplier for the next pyramid add (50 % each time)."""
+        return 0.50
+
+    def reset_pyramid(self, asset: str) -> None:
+        """Clear pyramid state when a position is fully closed."""
+        self._pyramid_counts.pop(asset, None)
 
     def update_trail(self, trade_id: str, teeth_price: float) -> Optional[float]:
         """Ratchet the trailing stop for an open trade.
@@ -252,6 +416,7 @@ class RiskManager:
 
         self.daily_realised_pnl += rec.pnl
         self.account_balance    += rec.pnl
+        self._recent_closes[f"{rec.asset}:{rec.signal_type}"] = datetime.now()
 
         return rec
 
@@ -289,9 +454,18 @@ class RiskManager:
 
     def record_closed_pnl(self, trade_id: str, pnl: float) -> None:
         """Simpler close path: scanner already computed PnL, just update counters."""
-        self.open_positions.pop(trade_id, None)
+        rec = self.open_positions.pop(trade_id, None)
         self.daily_realised_pnl += pnl
         self.account_balance    += pnl
+        # Reset pyramid counter only when NO more open positions remain for that asset
+        if rec is not None:
+            asset = rec.asset
+            still_open = any(r.asset == asset for r in self.open_positions.values())
+            if not still_open:
+                self.reset_pyramid(asset)
+            # Stamp cooldown so the next scan cycle can't immediately re-enter
+            # the same asset+direction.
+            self._recent_closes[f"{asset}:{rec.signal_type}"] = datetime.now()
 
     # ── Internals ─────────────────────────────────────────────────────────────
 

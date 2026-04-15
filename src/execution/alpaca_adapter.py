@@ -66,9 +66,15 @@ class AlpacaAdapter:
         if asset_class == "crypto":
             s = f"{float(volume):.8f}".rstrip("0").rstrip(".")
             return s if s else "0"
-        # stocks / fractional shares
-        s = f"{float(volume):.6f}".rstrip("0").rstrip(".")
-        return s if s else "0"
+        # Equities: Alpaca REJECTS stop / stop_limit / trailing_stop orders on
+        # fractional shares. If we submit the entry with fractional qty, the
+        # broker-side stop placement silently fails and the position ends up
+        # with NO stop protection. Floor to whole shares so every equity order
+        # is stop-eligible. Minimum 1 share (caller must ensure buying power).
+        whole = int(float(volume))
+        if whole < 1:
+            whole = 1
+        return str(whole)
 
     def connect(self) -> bool:
         # Cooldown: reuse cached result if called again within 60s
@@ -146,7 +152,13 @@ class AlpacaAdapter:
         take_profit: Optional[float] = None,
     ) -> Optional[dict]:
         if not self._connected and not self.connect():
+            self._log_trade_event(trade_id, "place_order_error", {"reason": "AlpacaAdapter not connected"})
             raise RuntimeError("AlpacaAdapter not connected")
+
+        self._log_trade_event(trade_id, "place_order_start", {
+            "signal_type": signal_type, "symbol": symbol, "volume": volume,
+            "expected_entry": expected_entry, "stop_loss": stop_loss, "take_profit": take_profit
+        })
 
         sym = self._normalize_symbol(symbol)
         ac = get_asset_class(canonical_symbol(symbol))
@@ -166,6 +178,7 @@ class AlpacaAdapter:
         if ac == "crypto":
             body["time_in_force"] = "gtc"
 
+        self._log_trade_event(trade_id, "market_order_request", {"body": body})
         try:
             r = requests.post(
                 f"{self._base}/v2/orders",
@@ -174,6 +187,7 @@ class AlpacaAdapter:
                 timeout=30,
             )
             if r.status_code not in (200, 201):
+                self._log_trade_event(trade_id, "market_order_failed", {"status": r.status_code, "text": r.text[:400]})
                 log.error("Alpaca market order failed: %s %s", r.status_code, r.text[:400])
                 try:
                     import json as _j
@@ -185,64 +199,133 @@ class AlpacaAdapter:
                     pass
                 return None
             order = r.json()
+            self._log_trade_event(trade_id, "market_order_success", {"order": order})
             oid = order.get("id")
             if not oid:
+                self._log_trade_event(trade_id, "market_order_error", {"reason": "No order ID returned"})
                 return None
 
+            self._log_trade_event(trade_id, "wait_for_fill_start", {"order_id": oid})
             filled = self._wait_order_final(str(oid))
+            self._log_trade_event(trade_id, "wait_for_fill_end", {"filled_order": filled})
+
+            if not filled or filled.get("status") != "filled":
+                self._log_trade_event(trade_id, "order_not_filled", {"filled_status": filled.get("status") if filled else "empty"})
+                log.error(f"Alpaca order {oid} for trade {trade_id} was not filled. Status: {filled.get('status') if filled else 'unknown'}")
+                return {
+                    "order_id": str(oid), "symbol": sym, "side": side, "volume": float(volume),
+                    "price": 0, "stop_loss": stop_loss, "take_profit": take_profit,
+                    "status": filled.get("status") or order.get("status"), "stop_order_id": None,
+                }
+
             filled_px = float(filled.get("filled_avg_price") or order.get("filled_avg_price") or expected_entry)
+            self._log_trade_event(trade_id, "order_filled", {"fill_price": filled_px})
 
             stop_side = "sell" if side == "buy" else "buy"
             stop_id = None
-            if ac != "crypto":
-                # Alpaca only supports stop orders for equities, not crypto.
-                # Crypto exits are managed entirely by the bot's internal trailing stop loop.
+            # Crypto requires stop_limit (simple stop market is not supported
+            # for crypto on Alpaca). Equities use type=stop. The limit_price
+            # has a 2% slippage buffer in the unfavorable direction so the
+            # order fills as soon as the stop triggers.
+            stop_price_val = float(stop_loss)
+            if ac == "crypto":
+                limit_px = (
+                    stop_price_val * 0.98 if stop_side == "sell" else stop_price_val * 1.02
+                )
+                stop_body: dict[str, Any] = {
+                    "symbol": sym,
+                    "qty": qty_str,
+                    "side": stop_side,
+                    "type": "stop_limit",
+                    "stop_price": str(round(stop_price_val, 8)),
+                    "limit_price": str(round(limit_px, 8)),
+                    "time_in_force": "gtc",
+                }
+            else:
                 stop_body = {
                     "symbol": sym,
                     "qty": qty_str,
                     "side": stop_side,
                     "type": "stop",
-                    "stop_price": str(round(float(stop_loss), 8)),
+                    "stop_price": str(round(stop_price_val, 8)),
                     "time_in_force": "gtc",
                 }
-                rs = requests.post(
-                    f"{self._base}/v2/orders",
-                    headers=self._headers(),
-                    data=json.dumps(stop_body),
-                    timeout=30,
+            self._log_trade_event(trade_id, "stop_order_request", {"body": stop_body})
+            rs = requests.post(
+                f"{self._base}/v2/orders",
+                headers=self._headers(),
+                data=json.dumps(stop_body),
+                timeout=30,
+            )
+            if rs.status_code in (200, 201):
+                stop_id = rs.json().get("id")
+                self._log_trade_event(trade_id, "stop_order_success", {"stop_id": stop_id})
+                log.info("Alpaca stop order placed for %s @ %.8f", sym, float(stop_loss))
+            else:
+                self._log_trade_event(trade_id, "stop_order_failed", {"status": rs.status_code, "text": rs.text[:200]})
+                log.warning(
+                    "Alpaca stop order not placed for %s (%s): %s — "
+                    "internal trailing-stop loop will manage exits.",
+                    sym, ac, rs.text[:200],
                 )
-                if rs.status_code in (200, 201):
-                    stop_id = rs.json().get("id")
-                else:
-                    log.warning("Alpaca stop order failed: %s %s", rs.status_code, rs.text[:300])
 
             tp_id = None
             if take_profit is not None:
-                tp_side = stop_side
-                tp_body = {
-                    "symbol": sym,
-                    "qty": qty_str,
-                    "side": tp_side,
-                    "type": "limit",
-                    "limit_price": str(round(float(take_profit), 8)),
-                    "time_in_force": "gtc",
-                }
-                rt = requests.post(
-                    f"{self._base}/v2/orders",
-                    headers=self._headers(),
-                    data=json.dumps(tp_body),
-                    timeout=30,
-                )
-                if rt.status_code in (200, 201):
-                    tp_id = rt.json().get("id")
+                tp_val   = float(take_profit)
+                fill_val = float(filled_px)
+                self._log_trade_event(trade_id, "tp_evaluation_start", {"take_profit": tp_val, "fill_price": fill_val})
 
-            self._trades[trade_id] = {
+                # Guard: skip TP if it's at or beyond the fill price (invalid order)
+                if (side == "buy" and tp_val <= fill_val) or \
+                   (side == "sell" and tp_val >= fill_val):
+                    self._log_trade_event(trade_id, "tp_skipped_invalid", {"take_profit": tp_val, "fill_price": fill_val})
+                    log.warning(
+                        "Alpaca TP skipped for %s: tp=%.10f is not past fill=%.10f",
+                        sym, tp_val, fill_val,
+                    )
+                else:
+                    tp_side = stop_side
+                    # Use enough decimal places for penny-crypto assets.
+                    # Standard 8dp collapses BONK/PEPE TP to entry price.
+                    _sig = max(8, -int(f"{tp_val:.2e}".split("e")[1]) + 6)
+                    tp_body = {
+                        "symbol": sym,
+                        "qty": qty_str,
+                        "side": tp_side,
+                        "type": "limit",
+                        "limit_price": str(round(tp_val, _sig)),
+                        "time_in_force": "gtc",
+                    }
+                    self._log_trade_event(trade_id, "tp_order_request", {"body": tp_body})
+                    rt = requests.post(
+                        f"{self._base}/v2/orders",
+                        headers=self._headers(),
+                        data=json.dumps(tp_body),
+                        timeout=30,
+                    )
+                    if rt.status_code in (200, 201):
+                        tp_id = rt.json().get("id")
+                        self._log_trade_event(trade_id, "tp_order_success", {"tp_id": tp_id})
+                        log.info(
+                            "Alpaca TP order placed for %s @ %.10f (side=%s)",
+                            sym, tp_val, tp_side,
+                        )
+                    else:
+                        self._log_trade_event(trade_id, "tp_order_failed", {"status": rt.status_code, "text": rt.text[:300]})
+                        log.warning(
+                            "Alpaca TP order FAILED for %s: %s %s",
+                            sym, rt.status_code, rt.text[:300],
+                        )
+
+            trade_summary = {
                 "symbol": sym,
                 "qty": qty_str,
                 "side": side,
                 "stop_order_id": str(stop_id) if stop_id else None,
                 "tp_order_id": str(tp_id) if tp_id else None,
             }
+            self._trades[trade_id] = trade_summary
+            self._log_trade_event(trade_id, "place_order_end", {"summary": trade_summary})
 
             return {
                 "order_id": str(oid),
@@ -257,20 +340,22 @@ class AlpacaAdapter:
                 "tp_order_id": tp_id,
             }
         except Exception as e:
-            log.error("Alpaca place_order error: %s", e)
+            self._log_trade_event(trade_id, "place_order_exception", {"error": str(e)})
+            log.exception("Alpaca place_order uncaught error for trade %s", trade_id)
             return None
 
-    def _cancel_if(self, oid: Optional[str]) -> None:
-        if not oid:
-            return
+    def cancel_order(self, order_id: str) -> bool:
+        if not self._connected and not self.connect():
+            return False
         try:
             requests.delete(
-                f"{self._base}/v2/orders/{oid}",
+                f"{self._base}/v2/orders/{order_id}",
                 headers=self._headers(),
                 timeout=15,
             )
         except Exception as e:
-            log.debug("Alpaca cancel order %s: %s", oid, e)
+            log.debug("Alpaca cancel order %s: %s", order_id, e)
+        return False
 
     def close_order(self, trade_id: str) -> bool:
         if not self._connected and not self.connect():
@@ -302,6 +387,46 @@ class AlpacaAdapter:
             log.error("Alpaca close_order: %s", e)
         return False
 
+    def get_last_fill_price(self, trade_id: str) -> Optional[float]:
+        """Return the actual fill price from the most recent close order for this trade.
+
+        Polls the Alpaca orders endpoint for the latest sell/buy-to-close order
+        associated with this trade and returns its ``filled_avg_price``.
+        Returns None if unavailable (caller falls back to HA close price).
+        """
+        if not self._connected and not self.connect():
+            return None
+        st = self._trades.get(trade_id)
+        if not st:
+            return None
+        sym = st["symbol"]
+        close_side = "sell" if st["side"] == "buy" else "buy"
+        try:
+            r = requests.get(
+                f"{self._base}/v2/orders",
+                headers=self._headers(),
+                params={
+                    "symbols": sym,
+                    "side": close_side,
+                    "status": "filled",
+                    "limit": 5,
+                    "direction": "desc",
+                },
+                timeout=15,
+            )
+            if r.status_code != 200:
+                return None
+            orders = r.json()
+            if not orders:
+                return None
+            # Most recent filled close order
+            latest = orders[0]
+            fp = latest.get("filled_avg_price")
+            return float(fp) if fp else None
+        except Exception as e:
+            log.debug("get_last_fill_price: %s", e)
+            return None
+
     def update_trailing_stop(self, trade_id: str, new_sl: float) -> bool:
         return self.modify_position_sltp(trade_id, new_sl, None)
 
@@ -316,32 +441,43 @@ class AlpacaAdapter:
         qty_str = st["qty"]
         side: str = st["side"]
         stop_side = "sell" if side == "buy" else "buy"
+        ac = get_asset_class(canonical_symbol(sym.replace("/", "")))
 
         self._cancel_if(st.get("stop_order_id"))
         if new_tp is not None:
             self._cancel_if(st.get("tp_order_id"))
 
-        # Alpaca does not support stop orders for crypto — exits are managed
-        # internally by the bot's trailing stop loop via market close orders.
-        if "/" in sym:
-            st["stop_order_id"] = None
-            return True
+        # Crypto requires stop_limit; equities use type=stop.
+        stop_price_val = float(new_sl)
+        if ac == "crypto":
+            limit_px = (
+                stop_price_val * 0.98 if stop_side == "sell" else stop_price_val * 1.02
+            )
+            _stop_payload = {
+                "symbol": sym,
+                "qty": qty_str,
+                "side": stop_side,
+                "type": "stop_limit",
+                "stop_price": str(round(stop_price_val, 8)),
+                "limit_price": str(round(limit_px, 8)),
+                "time_in_force": "gtc",
+            }
+        else:
+            _stop_payload = {
+                "symbol": sym,
+                "qty": qty_str,
+                "side": stop_side,
+                "type": "stop",
+                "stop_price": str(round(stop_price_val, 8)),
+                "time_in_force": "gtc",
+            }
 
         ok = True
         try:
             rs = requests.post(
                 f"{self._base}/v2/orders",
                 headers=self._headers(),
-                data=json.dumps(
-                    {
-                        "symbol": sym,
-                        "qty": qty_str,
-                        "side": stop_side,
-                        "type": "stop",
-                        "stop_price": str(round(float(new_sl), 8)),
-                        "time_in_force": "gtc",
-                    }
-                ),
+                data=json.dumps(_stop_payload),
                 timeout=30,
             )
             if rs.status_code in (200, 201):

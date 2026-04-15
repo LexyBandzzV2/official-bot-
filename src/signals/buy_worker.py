@@ -130,16 +130,25 @@ class BuySignalWorker:
         # ── Entry data from the last HA candle ────────────────────────────────
         last        = df.iloc[-1]
         entry_price = float(last.get("ha_close", last["close"]))
-        stop_loss   = round(entry_price * 0.98, 6)  # 2 % below entry
+        stop_loss   = round(entry_price * 0.98, 6)  # 2 % below entry (hard floor)
 
         jaw_price   = float(last["jaw"])   if not np.isnan(last["jaw"])   else 0.0
         teeth_price = float(last["teeth"]) if not np.isnan(last["teeth"]) else 0.0
         lips_price  = float(last["lips"])  if not np.isnan(last["lips"])  else 0.0
 
-        profit_estimate_pct = (
-            abs(entry_price - jaw_price) / entry_price * 100
-            if jaw_price > 0 else 0.0
-        )
+        # Est. Move: realistic ATR-based target (1.5 × ATR-14 as % of entry).
+        # The previous jaw-distance metric showed the entry→jaw gap which is
+        # far below price in an uptrend — resulting in inflated, misleading numbers.
+        # ATR-based gives the statistically expected single-candle move range.
+        try:
+            from src.indicators.utils import latest_atr
+            _atr_val = latest_atr(df, period=14)
+            profit_estimate_pct = (_atr_val / entry_price * 100 * 1.5) if _atr_val > 0 else 0.0
+        except Exception:
+            profit_estimate_pct = (
+                abs(entry_price - jaw_price) / entry_price * 100
+                if jaw_price > 0 else 0.0
+            )
 
         # ── Notification message ──────────────────────────────────────────────
         notification_message = ""
@@ -151,7 +160,7 @@ class BuySignalWorker:
                 f"Stochastic: K or D entered above 80\n"
                 f"Vortex: VI+ crossed above VI-\n"
                 f"Entry:     ${entry_price:.5f}\n"
-                f"Stop Loss: ${stop_loss:.5f} (2% below entry)\n"
+                f"Stop Loss: ${stop_loss:.5f} (5% below entry)\n"
                 f"Est. move: {profit_estimate_pct:.2f}%\n"
                 f"Exit when: lips touches teeth again (downward cross)"
             )
@@ -168,7 +177,7 @@ class BuySignalWorker:
             # staircase_confirmed removed
             entry_price         = entry_price,
             stop_loss           = stop_loss,
-            stop_loss_pct       = 2.0,
+            stop_loss_pct       = 5.0,
             profit_estimate_pct = round(profit_estimate_pct, 2),
             take_profit_trigger = "lips_crosses_down_to_teeth",
             notification_message= notification_message,

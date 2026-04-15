@@ -61,7 +61,7 @@ def print_buy_signal(sig: BuySignalResult) -> None:
     t.add_row("Symbol",     f"[bold cyan]{sig.asset}[/bold cyan]  [dim]{sig.timeframe}[/dim]  {_asset_class_label(sig.asset)}")
     t.add_row("Direction",  "[bold green]LONG  ▲[/bold green]")
     t.add_row("Entry",      f"[bold yellow]{_fmt_price(sig.entry_price)}[/bold yellow]")
-    t.add_row("Stop Loss",  f"[red]{_fmt_price(sig.stop_loss)}[/red]  [dim](-2% hard floor)[/dim]")
+    t.add_row("Stop Loss",  f"[red]{_fmt_price(sig.stop_loss)}[/red]  [dim](-5% hard floor)[/dim]")
     t.add_row("Est. Move",  f"[bold green]{_fmt_pct(sig.profit_estimate_pct)}[/bold green]")
     t.add_row("Strategy",   f"[bold]{getattr(sig, 'strategy_mode', 'SCALP')}[/bold]")
     t.add_row("Indicators", (
@@ -107,7 +107,7 @@ def print_sell_signal(sig: SellSignalResult) -> None:
     t.add_row("Symbol",     f"[bold cyan]{sig.asset}[/bold cyan]  [dim]{sig.timeframe}[/dim]  {_asset_class_label(sig.asset)}")
     t.add_row("Direction",  "[bold red]SHORT  ▼[/bold red]")
     t.add_row("Entry",      f"[bold yellow]{_fmt_price(sig.entry_price)}[/bold yellow]")
-    t.add_row("Stop Loss",  f"[red]{_fmt_price(sig.stop_loss)}[/red]  [dim](+2% hard ceiling)[/dim]")
+    t.add_row("Stop Loss",  f"[red]{_fmt_price(sig.stop_loss)}[/red]  [dim](+5% hard ceiling)[/dim]")
     t.add_row("Est. Move",  f"[bold green]{_fmt_pct(sig.profit_estimate_pct)}[/bold green]")
     t.add_row("Strategy",   f"[bold]{getattr(sig, 'strategy_mode', 'SCALP')}[/bold]")
     t.add_row("Indicators", (
